@@ -3,300 +3,205 @@ import json
 import cv2
 import numpy as np
 import os
-from concurrent.futures import ThreadPoolExecutor
-import time
-from functools import lru_cache
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+
+# 尝试导入 mask_loader，如果单独运行且没有该文件可能会报错
+try:
+    from mask_loader import load_poses_from_json
+except ImportError:
+    # 定义一个简单的 fallback 或者提示用户
+    def load_poses_from_json(path):
+        print("错误: 缺少 mask_loader.py")
+        return {}
 
 
-def process_image(image):
-    """基于直方图峰值生成二值化图像"""
-    histogram = cv2.calcHist([image], [0], None, [256], [0, 256])
-    max_value_index = np.argmax(histogram)
-    left_index = max(0, max_value_index - 30)
-    right_index = min(255, max_value_index + 30)
-    processed_image = np.zeros_like(image)
-    processed_image[(image >= left_index) & (image <= right_index)] = 255
-    return processed_image
+def process_single_frame_mask(img_path, local_poses, output_dir, static_keys, threshold=135):
+    """
+    处理单张图片的 Mask 生成任务
+    """
+    fname = os.path.basename(img_path)
+    save_path = os.path.join(output_dir, fname)
 
+    # 如果文件已存在，跳过（支持断点续传）
+    if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
+        return
 
-def make_mask(src_img, poses):
-    """根据多个子区域生成掩码"""
-    x1, y1, x2, y2 = poses[0]
-    cropped_image = src_img[y1:y2, x1:x2]
-    result = np.zeros_like(cropped_image)
-    for i in range(1, len(poses)):
-        x1_sub, y1_sub, x2_sub, y2_sub = poses[i]
-        temp = src_img[y1_sub:y2_sub, x1_sub:x2_sub]
-        min_val = temp.min()
-        max_val = temp.max()
-        result[(cropped_image >= min_val + 20) & (cropped_image <= max_val - 20)] = 255
-    return result
+    # 读取原图用于动态计算 (如字幕)
+    # 使用灰度读取即可
+    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return
 
+    # 创建全黑 Mask
+    mask = np.zeros_like(img)
 
-# 添加图像缓存
-@lru_cache(maxsize=100)
-def load_image_cached(image_path):
-    """带缓存的图像加载"""
-    return cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    has_content = False
 
+    for key, coords in local_poses.items():
+        # 判断是否为静态区域 (如台标 '1', 标题 '3')
+        is_static = (key in static_keys)
 
-def process_and_place_image_with_threshold(image_path, poses, threshold):
-    """使用指定阈值生成掩码并放置到原图位置"""
-    x1, y1, x2, y2 = poses[0]
-    original_image = load_image_cached(image_path)
-    if original_image is None:
-        raise ValueError(f"无法加载图像: {image_path}")
-    if x1 < 0 or y1 < 0 or x2 > original_image.shape[1] or y2 > original_image.shape[0]:
-        raise ValueError(f"无效坐标: {x1},{y1},{x2},{y2}")
+        for box in coords:
+            x1, y1, x2, y2 = map(int, box)
 
-    cropped_image = original_image[y1:y2, x1:x2]
-    _, binary_image = cv2.threshold(cropped_image, threshold, 255, cv2.THRESH_BINARY)
-    return binary_image, (x1, y1, x2, y2)
+            # 边界检查，防止崩溃
+            h, w = mask.shape
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
 
+            if x2 <= x1 or y2 <= y1:
+                continue
 
-def process_and_place_image(img_path, pos, j):
-    # 读取原始图像
-    x1, y1, x2, y2 = pos[0]
-    original_image = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-    if original_image is None:
-        raise ValueError("Image not found or unable to load")
-
-    # 检查坐标是否有效
-    if x1 < 0 or y1 < 0 or x2 > original_image.shape[1] or y2 > original_image.shape[0]:
-        raise ValueError("Invalid coordinates")
-
-    # 截取指定区域的图像
-    if int(j) == 2:  # 需要变化的框 (字幕)
-        cropped_image = original_image[y1:y2, x1:x2]
-
-        # 二值化处理
-        _, binary_image = cv2.threshold(cropped_image, 135, 255, cv2.THRESH_BINARY)
-    else:
-        binary_image = make_mask(original_image, pos)
-
-    # 定义膨胀操作的核
-    kernel = np.ones((3, 3), np.uint8)
-
-    # 进行膨胀处理
-    dilated_image = cv2.dilate(binary_image, kernel, iterations=2)
-
-    # 创建一个与原始图像相同大小的全0图片
-    result_image = np.zeros_like(original_image)
-
-    # 将处理后的图像放入到结果图像的指定位置
-    result_image[y1:y2, x1:x2] = dilated_image
-
-    return dilated_image, (x1, y1, x2, y2)
-
-
-def make_frame1(img_path, poses, threshold, color_tolerance=20, manual_threshold_region2=None):
-    """生成第一帧的掩码作为基准"""
-    result = None
-    original_image = load_image_cached(img_path)
-    if original_image is None:
-        raise ValueError(f"无法加载第一帧图像: {img_path}")
-
-    # 关键修改：明确遍历 1(台标), 2(字幕), 3(标题)
-    # 只有当 poses 中存在该 key 时才处理
-    target_keys = ['1', '2', '3']
-
-    for pos_key in target_keys:
-        if pos_key not in poses:
-            continue
-
-        pos = poses[pos_key]
-        j = int(pos_key)
-
-        # 根据区域类型选择处理方法
-        if j == 1:
-            bin_img, (x1, y1, x2, y2) = process_and_place_image_with_threshold(img_path, pos, threshold)
-        elif j == 2:
-            # 字幕区域
-            bin_img, (x1, y1, x2, y2) = process_and_place_image(img_path, pos, j)
-        elif j == 3:
-            # 标题区域
-            bin_img, (x1, y1, x2, y2) = process_and_place_image(img_path, pos, j)
-        else:
-            # 其他区域
-            bin_img, (x1, y1, x2, y2) = process_and_place_image(img_path, pos, j)
-
-        temp_result = np.zeros_like(original_image)
-        temp_result[y1:y2, x1:x2] = bin_img
-
-        if result is None:
-            result = temp_result
-        else:
-            result = cv2.bitwise_or(result, temp_result)
-
-    # 如果没有任何区域被选中，返回全黑图像
-    if result is None:
-        result = np.zeros_like(original_image)
-
-    return result
-
-
-def process_single_image(args):
-    """处理单张图像的包装函数，用于并行处理"""
-    i, img_path, poses, save_path, frame1_mask, static_boxes, threshold, kernel_size, iterations, color_tolerance, manual_threshold_region2 = args
-
-    original_image = load_image_cached(img_path)
-    if original_image is None:
-        print(f"无法加载图像: {img_path}")
-        return None
-
-    result = np.zeros_like(original_image)
-    kernel = np.ones((kernel_size, kernel_size), np.uint8)
-
-    # 关键修改：明确遍历所有可能的 key
-    target_keys = ['1', '2', '3']
-
-    for pos_key in target_keys:
-        if pos_key not in poses:
-            continue
-
-        pos = poses[pos_key]
-        j = int(pos_key)
-        x1, y1, x2, y2 = pos[0]
-
-        if j in static_boxes:
-            # 静态框直接复用第一帧
-            temp_result = np.zeros_like(original_image)
-            temp_result[y1:y2, x1:x2] = frame1_mask[y1:y2, x1:x2]
-        else:
-            # 动态框重新计算
-            if j == 1:
-                bin_img, _ = process_and_place_image_with_threshold(img_path, pos, threshold)
-            elif j == 2:
-                bin_img, _ = process_and_place_image(img_path, pos, j)
-            elif j == 3:
-                bin_img, (x1, y1, x2, y2) = process_and_place_image(img_path, pos, j)
+            if is_static:
+                # 【静态区域】：直接画白色实心矩形
+                cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
+                has_content = True
             else:
-                bin_img, _ = process_and_place_image(img_path, pos, j)
+                # 【动态区域】：例如字幕(key='2')，根据像素亮度生成Mask
+                # 截取 ROI
+                roi = img[y1:y2, x1:x2]
 
-            dilated_img = cv2.dilate(bin_img, kernel, iterations=iterations)
-            temp_result = np.zeros_like(original_image)
-            temp_result[y1:y2, x1:x2] = dilated_img
+                # 二值化处理：提取高亮文字
+                # 这里默认文字是白色的，阈值 135
+                _, bin_roi = cv2.threshold(roi, threshold, 255, cv2.THRESH_BINARY)
 
-        result = cv2.bitwise_or(result, temp_result)
+                # 将二值化后的 ROI 放入 Mask 对应位置
+                # 使用 maximum 确保不会覆盖掉已有的 mask 区域
+                mask[y1:y2, x1:x2] = np.maximum(mask[y1:y2, x1:x2], bin_roi)
+                has_content = True
 
-    save_path_img = os.path.join(save_path, os.path.basename(img_path))
-    cv2.imwrite(save_path_img, result)
+    # 如果生成了 Mask 内容，进行膨胀操作以确保覆盖边缘
+    if has_content:
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.dilate(mask, kernel, iterations=2)
 
-    return i
-
-
-def process_and_place_images_parallel(img_paths, poses, save_path, frame1_mask, static_boxes, threshold, kernel_size,
-                                      iterations, color_tolerance=20, max_workers=4, manual_threshold_region2=None):
-    """批量处理图像并保存结果 - 并行版本"""
-    os.makedirs(save_path, exist_ok=True)
-    print(f"开始并行批量处理 {len(img_paths)} 张图像...")
-
-    tasks = []
-    for i, img_path in enumerate(img_paths):
-        task = (
-            i, img_path, poses, save_path, frame1_mask, static_boxes,
-            threshold, kernel_size, iterations, color_tolerance, manual_threshold_region2
-        )
-        tasks.append(task)
-
-    completed_count = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(process_single_image, task) for task in tasks]
-
-        for future in futures:
-            result = future.result()
-            if result is not None:
-                completed_count += 1
-                if completed_count % 50 == 0 or completed_count == len(img_paths):
-                    print(f"进度: {completed_count}/{len(img_paths)}")
-
-    print(f"并行处理完成，成功处理 {completed_count}/{len(img_paths)} 张图像")
+    # 保存 Mask
+    cv2.imwrite(save_path, mask)
 
 
-def process_and_place_images(img_paths, poses, save_path, frame1_mask, static_boxes, threshold, kernel_size,
-                             iterations, color_tolerance=20, manual_threshold_region2=None):
-    """批量处理入口"""
-    process_and_place_images_parallel(
-        img_paths, poses, save_path, frame1_mask, static_boxes,
-        threshold, kernel_size, iterations, color_tolerance,
-        manual_threshold_region2=manual_threshold_region2
+def generate_local_masks(frame_dir, output_dir, original_poses, crop_coords, static_keys=['1', '3']):
+    """
+    主控函数：生成适应裁切区域的 Mask。
+
+    Args:
+        frame_dir: 裁切后的图片文件夹
+        output_dir: Mask 输出文件夹
+        original_poses: 原始的全局坐标 {'1': [[x1,y1,x2,y2]...]}
+        crop_coords: 全局裁切框 [gx1, gy1, gx2, gy2]
+        static_keys: 哪些 key 被视为静态区域 (默认 '1'台标, '3'标题)
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 获取所有帧文件
+    frames = sorted([f for f in os.listdir(frame_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+    if not frames:
+        print("[MakeMask] 错误: 帧文件夹为空")
+        return
+
+    cx1, cy1, cx2, cy2 = crop_coords
+    crop_w = cx2 - cx1
+    crop_h = cy2 - cy1
+
+    print(f"[MakeMask] 计算局部坐标 (裁切偏移: -{cx1}, -{cy1})")
+
+    # 1. 坐标变换：Global -> Local
+    local_poses = {}
+    for key, coords_list in original_poses.items():
+        local_list = []
+        for box in coords_list:
+            gx1, gy1, gx2, gy2 = box
+
+            # 减去裁切偏移量
+            lx1 = gx1 - cx1
+            ly1 = gy1 - cy1
+            lx2 = gx2 - cx1
+            ly2 = gy2 - cy1
+
+            # 裁剪坐标使其不超出小图边界 (Clip)
+            lx1 = max(0, lx1)
+            ly1 = max(0, ly1)
+            lx2 = min(crop_w, lx2)
+            ly2 = min(crop_h, ly2)
+
+            # 只有有效的框才保留
+            if lx2 > lx1 and ly2 > ly1:
+                local_list.append([lx1, ly1, lx2, ly2])
+
+        if local_list:
+            local_poses[key] = local_list
+
+    # 2. 生成静态基准 Mask (static_mask.png)
+    # 无论是否有动态内容，生成一张只包含静态框的 Mask 是很有用的备份
+    h, w = crop_h, crop_w
+    # 如果 crop 尺寸有问题，尝试读取一张图获取
+    if h <= 0 or w <= 0:
+        sample = cv2.imread(os.path.join(frame_dir, frames[0]), cv2.IMREAD_GRAYSCALE)
+        h, w = sample.shape
+
+    static_mask = np.zeros((h, w), dtype=np.uint8)
+    has_static_content = False
+
+    for key, coords in local_poses.items():
+        # 如果是静态key，或者是某些没有标记但在列表里的
+        if key in static_keys:
+            for box in coords:
+                x1, y1, x2, y2 = map(int, box)
+                cv2.rectangle(static_mask, (x1, y1), (x2, y2), 255, -1)
+                has_static_content = True
+
+    if has_static_content:
+        kernel = np.ones((3, 3), np.uint8)
+        static_mask = cv2.dilate(static_mask, kernel, iterations=2)
+
+    cv2.imwrite(os.path.join(output_dir, "static_mask.png"), static_mask)
+    print("[MakeMask] 已生成静态基准 Mask: static_mask.png")
+
+    # 3. 检查是否需要生成动态序列 Mask
+    # 如果包含除 static_keys 以外的 key (比如 '2')，则需要逐帧处理
+    has_dynamic = False
+    for k in local_poses:
+        if k not in static_keys:
+            has_dynamic = True
+            break
+
+    if not has_dynamic:
+        print("[MakeMask] 仅包含静态区域，跳过序列生成。")
+        return
+
+    # 4. 并行生成动态序列
+    print(f"[MakeMask] 检测到动态区域，开始生成 {len(frames)} 张 Mask...")
+
+    # 使用 partial 固定参数
+    process_func = partial(
+        process_single_frame_mask,
+        local_poses=local_poses,
+        output_dir=output_dir,
+        static_keys=static_keys
     )
+
+    frame_paths = [os.path.join(frame_dir, f) for f in frames]
+
+    # 线程池并行处理
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        # 使用 list 触发执行
+        list(executor.map(process_func, frame_paths))
+
+    print("[MakeMask] 动态 Mask 序列生成完成。")
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='生成掩码图片工具 - 严格JSON版')
-    parser.add_argument('--input', type=str, required=True, help='输入图片文件夹路径')
-    parser.add_argument('--output', type=str, required=True, help='输出掩码文件夹路径')
-    parser.add_argument('--threshold', type=int, default=85, help='二值化阈值，默认105')
-    parser.add_argument('--kernel_size', type=int, default=3, help='膨胀操作的核大小，默认3')
-    parser.add_argument('--iterations', type=int, default=2, help='膨胀操作迭代次数，默认2')
-    parser.add_argument('--static-boxes', type=str, default='1,3', help='使用第一帧掩码的框索引（逗号分隔），默认1,3')
-    parser.add_argument('--color-tolerance', type=int, default=40, help='颜色容忍度，默认40')
-    parser.add_argument('--max-workers', type=int, default=4, help='并行处理的最大线程数，默认4')
-    parser.add_argument('--region2-threshold', type=int, default=None, help='区域2手动阈值')
-    parser.add_argument('--mask_json', type=str, required=True, help='指定的Mask JSON文件路径')
+    # 命令行入口，用于调试
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--frames', required=True, help='图片文件夹')
+    parser.add_argument('--output', required=True, help='Mask输出文件夹')
+    parser.add_argument('--json', required=True, help='原始Mask JSON')
+    parser.add_argument('--crop', required=True, help='裁切坐标 x1,y1,x2,y2 (逗号分隔)')
 
     args = parser.parse_args()
 
-    # 1. 严格加载 JSON
-    poses = {}
-    if args.mask_json and os.path.exists(args.mask_json):
-        print(f"✓ 正在加载Mask JSON文件: {args.mask_json}")
-        try:
-            from mask_loader import load_poses_from_json
+    crop_coords = list(map(int, args.crop.split(',')))
+    poses = load_poses_from_json(args.json)
 
-            poses = load_poses_from_json(args.mask_json)
-        except ImportError:
-            print("✗ 错误: 找不到 mask_loader.py 模块")
-            sys.exit(1)
-        except Exception as e:
-            print(f"✗ 错误: JSON加载过程发生异常: {e}")
-            sys.exit(1)
-
-        if not poses:
-            print("✗ 错误: JSON文件加载后为空，或者没有有效区域。程序退出。")
-            sys.exit(1)
-        else:
-            print(f"✓ 成功加载区域: {list(poses.keys())}")
-            for k, v in poses.items():
-                print(f"  区域 {k}: {len(v)} 个框")
-    else:
-        print(f"✗ 错误: Mask JSON文件不存在或未指定: {args.mask_json}")
-        sys.exit(1)
-
-    # 2. 解析静态框索引
-    static_boxes = set(map(int, args.static_boxes.split(',')))
-
-    # 3. 获取输入图像
-    img_paths = [os.path.join(args.input, f) for f in os.listdir(args.input)
-                 if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))]
-    img_paths.sort()
-
-    if not img_paths:
-        print(f"警告：输入文件夹 {args.input} 中没有找到图片文件")
-    else:
-        print(f"找到 {len(img_paths)} 张图像文件")
-        start_time = time.time()
-
-        # 4. 生成第一帧基准掩码
-        print("生成第一帧掩码...")
-        try:
-            frame1_mask = make_frame1(
-                img_paths[0], poses, args.threshold, args.color_tolerance,
-                manual_threshold_region2=args.region2_threshold
-            )
-        except Exception as e:
-            print(f"✗ 生成第一帧掩码失败: {e}")
-            sys.exit(1)
-
-        # 5. 批量处理
-        process_and_place_images(
-            img_paths, poses, args.output, frame1_mask,
-            static_boxes, args.threshold, args.kernel_size, args.iterations,
-            args.color_tolerance, manual_threshold_region2=args.region2_threshold
-        )
-
-        end_time = time.time()
-        print(f"所有掩码生成完成，耗时: {end_time - start_time:.2f} 秒")
-        print(f"保存在: {args.output}")
+    generate_local_masks(args.frames, args.output, poses, crop_coords)
