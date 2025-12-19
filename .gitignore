@@ -1,0 +1,15 @@
+# 忽略所有 .pth 和 .ckpt 模型权重文件
+*.pth
+*.ckpt
+
+# 忽略 weights 文件夹 (双重保险)
+weights/
+
+# 忽略结果和输入
+results/
+inputs/
+
+# 忽略 Python 环境和配置
+venv/
+.idea/
+__pycache__/

@@ -1,0 +1,2 @@
+# python make_mask.pys
+python inference_propainter.py -i /home/FeiLong_Grp/ZhangMengHui/Model/Model/Model/ProPainter/results/finalresults/segment_0/inputs/imgs_resize -m /home/FeiLong_Grp/ZhangMengHui/Model/Model/Model/ProPainter/results/finalresults/segment_0/inputs/masks_resize
