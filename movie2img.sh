@@ -1,1 +1,0 @@
-python movie2img.py test_dadaoxinhuo_clip0.mp4 ./temp_file/inputs/imgs
