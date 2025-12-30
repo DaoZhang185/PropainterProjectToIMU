@@ -469,11 +469,11 @@ if __name__ == '__main__':
     # set up RAFT and flow competition model
     ##############################################
     ckpt_path = load_file_from_url(url=os.path.join(pretrain_model_url, 'raft-things.pth'),
-                                   model_dir='weights', progress=True, file_name=None)
+                                   model_dir='../weights', progress=True, file_name=None)
     fix_raft = RAFT_bi(ckpt_path, device)
 
     ckpt_path = load_file_from_url(url=os.path.join(pretrain_model_url, 'recurrent_flow_completion.pth'),
-                                   model_dir='weights', progress=True, file_name=None)
+                                   model_dir='../weights', progress=True, file_name=None)
     fix_flow_complete = RecurrentFlowCompleteNet(ckpt_path)
     for p in fix_flow_complete.parameters():
         p.requires_grad = False
@@ -484,7 +484,7 @@ if __name__ == '__main__':
     # set up ProPainter model
     ##############################################
     ckpt_path = load_file_from_url(url=os.path.join(pretrain_model_url, 'ProPainter.pth'),
-                                   model_dir='weights', progress=True, file_name=None)
+                                   model_dir='../weights', progress=True, file_name=None)
     model = InpaintGenerator(model_path=ckpt_path).to(device)
     model.eval()
 
