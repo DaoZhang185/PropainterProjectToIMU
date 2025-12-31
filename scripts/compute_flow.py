@@ -8,7 +8,7 @@ import torch
 from torchvision import transforms
 
 from RAFT import RAFT
-from project.utils.flow_util import *
+from utils.flow_util import *
 
 def imwrite(img, file_path, params=None, auto_mkdir=True):
     if auto_mkdir:

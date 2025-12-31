@@ -16,8 +16,8 @@ import gradio as gr
 from tools.painter import mask_painter
 from track_anything import TrackingAnything
 
-from project.model.misc import get_device
-from project.utils.download_util import load_file_from_url
+from model.misc import get_device
+from utils.download_util import load_file_from_url
 
 
 def parse_augment():

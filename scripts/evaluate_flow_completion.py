@@ -9,9 +9,9 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 
-from project.core.dataset import TestDataset
-from project.model.modules.flow_comp_raft import RAFT_bi
-from project.model import RecurrentFlowCompleteNet
+from core.dataset import TestDataset
+from model.modules.flow_comp_raft import RAFT_bi
+from model import RecurrentFlowCompleteNet
 
 import cvbase
 import imageio

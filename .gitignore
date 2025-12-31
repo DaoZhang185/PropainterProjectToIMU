@@ -3,7 +3,7 @@
 *.ckpt
 
 # 忽略 weights 文件夹 (双重保险)
-project/weights/
+weights/
 
 # 忽略结果和输入
 results/

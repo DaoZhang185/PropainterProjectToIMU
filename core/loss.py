@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import lpips
-from project.model.vgg_arch import VGGFeatureExtractor
+from model.vgg_arch import VGGFeatureExtractor
 
 class PerceptualLoss(nn.Module):
     """Perceptual loss with commonly used style loss.
