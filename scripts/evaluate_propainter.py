@@ -7,18 +7,17 @@ import cv2
 import numpy as np
 import argparse
 from PIL import Image
-import torch.nn.functional as F
 
 import torch
 from torch.utils.data import DataLoader
 
-from model.modules.flow_comp_raft import RAFT_bi
-from model.recurrent_flow_completion import RecurrentFlowCompleteNet
-from model.propainter import InpaintGenerator
+from project.model.modules.flow_comp_raft import RAFT_bi
+from project.model import RecurrentFlowCompleteNet
+from project.model.propainter import InpaintGenerator
 
 # from core.dataset import TestDataset
-from core.dataset import TestDataset
-from core.metrics import calc_psnr_and_ssim, calculate_i3d_activations, calculate_vfid, init_i3d_model
+from project.core.dataset import TestDataset
+from project.core.metrics import calc_psnr_and_ssim, calculate_i3d_activations, calculate_vfid, init_i3d_model
 
 from time import time
 
