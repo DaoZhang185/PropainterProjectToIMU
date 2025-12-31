@@ -1,17 +1,14 @@
 # -*- coding: utf-8 -*-
 import sys 
-sys.path.append(".") 
+sys.path.append(".")
 
-import os
-import cv2
 import argparse
 from PIL import Image
 import torch
-import torch.nn.functional as F
 from torchvision import transforms
 
 from RAFT import RAFT
-from utils.flow_util import *
+from project.utils.flow_util import *
 
 def imwrite(img, file_path, params=None, auto_mkdir=True):
     if auto_mkdir:

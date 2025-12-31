@@ -9,11 +9,11 @@ import numpy as np
 import torch
 import torchvision.transforms as transforms
 
-from utils.file_client import FileClient
-from utils.img_util import imfrombytes
-from utils.flow_util import resize_flow, flowread
-from core.utils import (create_random_shape_with_random_motion, Stack,
-                        ToTorchFormatTensor, GroupRandomHorizontalFlip,GroupRandomHorizontalFlowFlip)
+from project.utils.file_client import FileClient
+from project.core.utils import imfrombytes
+from project.core.utils import resize_flow, flowread
+from project.core.utils import (create_random_shape_with_random_motion, Stack,
+                                ToTorchFormatTensor, GroupRandomHorizontalFlip, GroupRandomHorizontalFlowFlip)
 
 
 class TrainDataset(torch.utils.data.Dataset):

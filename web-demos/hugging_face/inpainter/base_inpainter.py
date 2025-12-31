@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import os
-import sys
 import cv2
 import numpy as np
 import scipy.ndimage
@@ -10,10 +9,10 @@ from tqdm import tqdm
 import torch
 import torchvision
 
-from model.modules.flow_comp_raft import RAFT_bi
-from model.recurrent_flow_completion import RecurrentFlowCompleteNet
-from model.propainter import InpaintGenerator
-from core.utils import to_tensors
+from project.model.modules.flow_comp_raft import RAFT_bi
+from project.model import RecurrentFlowCompleteNet
+from project.model.propainter import InpaintGenerator
+from project.core.utils import to_tensors
 
 import warnings
 warnings.filterwarnings("ignore")
