@@ -1,14 +1,54 @@
+import sys
 import os
+
+# =================================================================
+# 【路径修复】确保脚本能引用上级目录（根目录）的模块
+# =================================================================
+current_dir = os.path.dirname(os.path.abspath(__file__))  # .../ProPainter/project
+root_dir = os.path.dirname(current_dir)  # .../ProPainter
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+# =================================================================
+
 import argparse
 import json
 import shutil
 import cv2
 import numpy as np
 import subprocess
-import sys
 import glob
 import datetime
+import math
 from concurrent.futures import ThreadPoolExecutor
+
+
+# =================================================================
+# 0. 日志记录器
+# =================================================================
+class DualLogger(object):
+    """
+    同时将输出打印到控制台（供Web端捕获）和写入日志文件（供排查）
+    """
+
+    def __init__(self, filepath):
+        self.terminal = sys.stdout
+        # line buffering 确保写入及时
+        self.log = open(filepath, "a", encoding='utf-8', buffering=1)
+
+    def write(self, message):
+        try:
+            self.terminal.write(message)
+            self.log.write(message)
+        except Exception:
+            pass
+
+    def flush(self):
+        try:
+            self.terminal.flush()
+            self.log.flush()
+        except Exception:
+            pass
+
 
 # =================================================================
 # 引入依赖
@@ -18,7 +58,7 @@ try:
     from make_mask import generate_local_masks
     from mask_loader import load_poses_from_json
 except ImportError as e:
-    print(f"CRITICAL ERROR: 缺少依赖脚本 ({e})。请确保 scene_detector.py, make_mask.py, mask_loader.py 在同一目录下。")
+    print(f"CRITICAL ERROR: 缺少依赖脚本 ({e})。请确保所有 .py 文件都在同一目录下。")
     sys.exit(1)
 
 
@@ -37,15 +77,11 @@ def setup_dirs(base_path):
 
 
 def extract_frames_ffmpeg(video_path, output_dir):
-    """
-    使用 FFmpeg 提取帧。
-    每次强制重新提取，确保数据最新。
-    """
+    """使用 FFmpeg 提取帧"""
     if not os.path.exists(video_path):
         print(f"[Error] 视频文件不存在: {video_path}")
         return False
 
-    # 强制清理旧目录
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
     setup_dirs(output_dir)
@@ -84,10 +120,6 @@ def get_recursive_segments(start_idx, end_idx, max_frames=300):
 
 
 def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
-    """
-    计算裁切区域。
-    Padding 默认 150，且强制 16 倍数对齐。
-    """
     boxes = []
     for key, coords_list in all_poses.items():
         if not coords_list: continue
@@ -95,13 +127,11 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
         x1, y1 = np.min(arr[:, 0]), np.min(arr[:, 1])
         x2, y2 = np.max(arr[:, 2]), np.max(arr[:, 3])
 
-        # 1. 基础 Padding
         nx1 = max(0, x1 - padding)
         ny1 = max(0, y1 - padding)
         nx2 = min(img_w, x2 + padding)
         ny2 = min(img_h, y2 + padding)
 
-        # 2. 强制宽高为 16 的倍数
         w = nx2 - nx1
         h = ny2 - ny1
         pad_w = (16 - (w % 16)) % 16
@@ -111,7 +141,6 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
             nx2 += pad_w
         else:
             nx1 = max(0, nx1 - pad_w)
-
         if ny2 + pad_h <= img_h:
             ny2 += pad_h
         else:
@@ -123,7 +152,6 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
             "original_poses": {key: coords_list}
         })
 
-    # 合并重叠
     merged = True
     while merged:
         merged = False
@@ -154,7 +182,6 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
 
 def crop_worker(args):
     src_path, dest_path, coords = args
-    # 强制覆盖
     img = cv2.imread(src_path)
     if img is None: return False
     x1, y1, x2, y2 = map(int, coords)
@@ -166,14 +193,12 @@ def crop_worker(args):
 def merge_worker(args):
     frame_idx, frame_filename, full_frames_dir, final_frames_dir, merge_plans = args
     save_path = os.path.join(final_frames_dir, frame_filename)
-
     original_img_path = os.path.join(full_frames_dir, frame_filename)
     base_img = cv2.imread(original_img_path)
     if base_img is None: return False
 
     for plan in merge_plans:
         relative_idx = frame_idx - plan['start_frame']
-
         restored_filename = f"{relative_idx:04d}.png"
         restored_path_v1 = os.path.join(plan['result_dir'], "frames", restored_filename)
         restored_path_v2 = os.path.join(plan['result_dir'], restored_filename)
@@ -183,13 +208,10 @@ def merge_worker(args):
             restored_crop = cv2.imread(restored_path)
             if restored_crop is not None:
                 x1, y1, x2, y2 = map(int, plan['coords'])
-
                 h_crop, w_crop = restored_crop.shape[:2]
                 target_h, target_w = y2 - y1, x2 - x1
-
                 if h_crop != target_h or w_crop != target_w:
                     restored_crop = cv2.resize(restored_crop, (target_w, target_h))
-
                 base_img[y1:y2, x1:x2] = 0
                 base_img[y1:y2, x1:x2] = restored_crop
 
@@ -199,36 +221,25 @@ def merge_worker(args):
 
 def render_video(frames_dir, source_video, output_path, fps=25.0):
     print(f"[Render] 正在合成视频: {output_path} (FPS: {fps})")
-
     ffmpeg_cmd = [
-        'ffmpeg', '-y',
-        '-f', 'image2',
-        '-framerate', str(fps),
+        'ffmpeg', '-y', '-f', 'image2', '-framerate', str(fps),
         '-i', os.path.join(frames_dir, 'frame_%04d.png'),
         '-i', source_video,
         '-vf', "pad=ceil(iw/2)*2:ceil(ih/2)*2",
-        '-c:v', 'mpeg4',
-        '-q:v', '2',
-        '-map', '0:v:0',
-        '-map', '1:a:0?',
-        '-c:a', 'copy',
-        '-shortest',
+        '-c:v', 'mpeg4', '-q:v', '2',
+        '-map', '0:v:0', '-map', '1:a:0?', '-c:a', 'copy', '-shortest',
         output_path
     ]
-
     try:
         subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return True
     except subprocess.CalledProcessError:
         try:
             cmd_no_audio = [
-                'ffmpeg', '-y',
-                '-f', 'image2',
-                '-framerate', str(fps),
+                'ffmpeg', '-y', '-f', 'image2', '-framerate', str(fps),
                 '-i', os.path.join(frames_dir, 'frame_%04d.png'),
                 '-vf', "pad=ceil(iw/2)*2:ceil(ih/2)*2",
-                '-c:v', 'mpeg4',
-                '-q:v', '2',
+                '-c:v', 'mpeg4', '-q:v', '2',
                 output_path
             ]
             subprocess.run(cmd_no_audio, check=True)
@@ -250,32 +261,36 @@ def main():
     parser.add_argument('--model_path', default='inference_propainter.py', help='推理脚本路径')
     parser.add_argument('--output_video', default='final_output.mp4', help='最终输出视频文件名')
     parser.add_argument('--max_frames', type=int, default=300, help='单次推理最大帧数限制')
-    # Padding 默认 150，保证背景参考充足
     parser.add_argument('--padding', type=int, default=150, help='裁切区域外扩像素')
     parser.add_argument('--max_workers', type=int, default=8, help='并行处理线程数')
     args = parser.parse_args()
 
-    # 0. 初始化 & 【目录结构升级】
+    # 路径绝对化
+    if not os.path.isabs(args.model_path):
+        args.model_path = os.path.join(current_dir, args.model_path)
+
+    # 0. 初始化
     report_progress("start", 0)
 
-    # 视频名 + 时间戳 目录结构
     video_name = os.path.splitext(os.path.basename(args.video))[0]
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     args.workspace = os.path.join(args.workspace, video_name, f"{video_name}_{timestamp}")
+    setup_dirs(args.workspace)
+
+    log_file_path = os.path.join(args.workspace, "pipeline_run.log")
+    sys.stdout = DualLogger(log_file_path)
+    sys.stderr = sys.stdout
 
     print(f"\n[Main] ===========================================")
     print(f"[Main] 任务启动: {video_name}")
-    print(f"[Main] 独立工作目录: {args.workspace}")
+    print(f"[Main] 工作目录: {args.workspace}")
+    print(f"[Main] 日志文件: {log_file_path}")
     print(f"[Main] ===========================================\n")
-
-    setup_dirs(args.workspace)
 
     # === Step 1: 视频转全量帧 ===
     print("\n=== Step 1: 全量帧提取 ===")
     frames_dir = os.path.join(args.workspace, "full_frames_original")
-
-    success = extract_frames_ffmpeg(args.video, frames_dir)
-    if not success: sys.exit(1)
+    if not extract_frames_ffmpeg(args.video, frames_dir): sys.exit(1)
 
     report_progress("extract_frames", 10)
 
@@ -287,14 +302,11 @@ def main():
                 frame_files_map[idx] = f
             except:
                 pass
-
     sorted_indices = sorted(frame_files_map.keys())
     if not sorted_indices:
         print("[Error] 无法解析帧文件索引")
         sys.exit(1)
-
     frame_files = [frame_files_map[i] for i in sorted_indices]
-    print(f"[Main] 帧索引范围: {min(sorted_indices)} - {max(sorted_indices)}, 总计: {len(frame_files)}")
 
     try:
         cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate', '-of',
@@ -305,7 +317,6 @@ def main():
     except:
         fps = 25.0
     print(f"[Main] 视频帧率: {fps:.2f} FPS")
-
     sample_img = cv2.imread(os.path.join(frames_dir, frame_files[0]))
     img_h, img_w = sample_img.shape[:2]
 
@@ -316,68 +327,74 @@ def main():
 
     work_plans = resolve_overlaps(all_poses, padding=args.padding, img_w=img_w, img_h=img_h)
     total_plans = len(work_plans)
-
     all_merge_tasks = []
+
+    print(f"[Main] 总计 {total_plans} 个处理区域计划。")
 
     for plan_idx, plan in enumerate(work_plans):
         region_id = "_".join(plan['keys'])
         region_name = f"region_{region_id}"
+        print(f"\n>>> [Step 2.{plan_idx + 1}] 处理区域: {region_name} ({plan_idx + 1}/{total_plans})")
 
         region_dir = os.path.join(args.workspace, region_name)
         crop_frames_dir = os.path.join(region_dir, "frames")
         setup_dirs(crop_frames_dir)
 
-        # 2.1 裁切
-        print(f"\n>>> 处理区域 [{region_name}] - 裁切")
+        # ==================== 进度条计算逻辑 (解决回跳问题) ====================
+        # 将 10% - 90% 的进度区间分配给所有 plan
+        # 每个 plan 占用区间: plan_start_pct ~ plan_end_pct
+        pct_step = 80.0 / total_plans
+        plan_start_pct = 10.0 + plan_idx * pct_step
+
+        # 1. 裁切 (占该区域进度的 10%)
+        print(f"    裁切中...")
         tasks = []
         for fname in frame_files:
             src = os.path.join(frames_dir, fname)
             dst = os.path.join(crop_frames_dir, fname)
             tasks.append((src, dst, plan['crop_coords']))
-
         with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
             list(executor.map(crop_worker, tasks))
 
-        report_progress("cropping", 10 + int((plan_idx + 0.5) / total_plans * 20))
+        current_pct = plan_start_pct + (pct_step * 0.1)
+        report_progress(f"cropping_{region_id}", current_pct)
 
-        # 2.2 场景检测 (阈值 6.0)
+        # 2. 场景检测
         print(f"    检测场景...")
         scene_json_path = os.path.join(region_dir, f"{region_name}_scenes.json")
         scene_indices = detect_scenes_from_folder(crop_frames_dir, threshold=6.0)
-
         total_video_frames = len(frame_files)
         if 0 not in scene_indices: scene_indices.insert(0, 0)
         if total_video_frames not in scene_indices: scene_indices.append(total_video_frames)
         scene_indices = sorted(list(set(scene_indices)))
-
         with open(scene_json_path, 'w') as f:
             json.dump(scene_indices, f)
 
-        # 2.3 生成 Mask
+        # 3. 生成 Mask (占该区域进度的 10%)
         print(f"    生成 Mask...")
         mask_output_dir = os.path.join(region_dir, "masks")
         generate_local_masks(crop_frames_dir, mask_output_dir, plan['original_poses'], plan['crop_coords'],
                              static_keys=['1', '3'])
 
-        report_progress("mask_generation", 40)
+        current_pct = plan_start_pct + (pct_step * 0.2)
+        report_progress(f"mask_gen_{region_id}", current_pct)
 
-        # 2.4 分段推理
-        print(f"    开始推理...")
+        # 4. 分段推理 (占该区域进度的 80%)
+        print(f"    开始推理 (后端模型调用)...")
         results_dir = os.path.join(region_dir, "results")
         temp_inputs_base = os.path.join(region_dir, "temp_inputs")
         temp_masks_base = os.path.join(region_dir, "temp_masks")
-        setup_dirs(results_dir)
-        setup_dirs(temp_inputs_base)
+        setup_dirs(results_dir);
+        setup_dirs(temp_inputs_base);
         setup_dirs(temp_masks_base)
 
         total_scenes = len(scene_indices) - 1
-
         for i in range(total_scenes):
             scene_start = scene_indices[i]
             scene_end = scene_indices[i + 1]
             segments = get_recursive_segments(scene_start, scene_end, args.max_frames)
 
-            for seg_start, seg_end in segments:
+            for seg_idx, (seg_start, seg_end) in enumerate(segments):
                 seg_name = f"seg_{seg_start:06d}_{seg_end:06d}"
                 seg_out_dir = os.path.join(results_dir, seg_name)
 
@@ -388,41 +405,32 @@ def main():
                     'end_frame': seg_end
                 })
 
-                frames_out_dir = os.path.join(seg_out_dir, "frames")
-                mp4_output = os.path.join(seg_out_dir, "inference_output.mp4")
-
-                # 每次重新运行推理
+                # 准备临时目录
                 current_input_dir = os.path.join(temp_inputs_base, seg_name)
                 current_mask_dir = os.path.join(temp_masks_base, seg_name)
                 if os.path.exists(current_input_dir): shutil.rmtree(current_input_dir)
                 if os.path.exists(current_mask_dir): shutil.rmtree(current_mask_dir)
-                os.makedirs(current_input_dir)
+                os.makedirs(current_input_dir);
                 os.makedirs(current_mask_dir)
 
                 valid_count = 0
                 for f_idx in range(seg_start, seg_end):
                     if f_idx >= len(frame_files): break
                     fname = frame_files[f_idx]
-
                     src_f = os.path.abspath(os.path.join(crop_frames_dir, fname))
                     dst_f = os.path.join(current_input_dir, fname)
                     os.symlink(src_f, dst_f)
-
-                    src_m_dynamic = os.path.abspath(os.path.join(mask_output_dir, fname))
+                    src_m = os.path.abspath(os.path.join(mask_output_dir, fname))
                     src_m_static = os.path.abspath(os.path.join(mask_output_dir, "static_mask.png"))
                     dst_m = os.path.join(current_mask_dir, fname)
-
-                    if os.path.exists(src_m_dynamic):
-                        os.symlink(src_m_dynamic, dst_m)
+                    if os.path.exists(src_m):
+                        os.symlink(src_m, dst_m)
                     elif os.path.exists(src_m_static):
                         os.symlink(src_m_static, dst_m)
                     valid_count += 1
 
                 if valid_count == 0: continue
 
-                # 【核心修复】：回归标准参数，解决黑色残留
-                # mask_dilation: 4 (标准值，避免0导致的边缘生硬)
-                # flow_mask_dilation: 4 (标准值，避免20对字幕的过度忽略)
                 cmd = [
                     sys.executable, args.model_path,
                     "--video", current_input_dir,
@@ -430,20 +438,51 @@ def main():
                     "--output", seg_out_dir,
                     "--fp16",
                     "--mask_dilation", "4",
-                    "--flow_mask_dilation", "4",
+                    "--flow_mask_dilation", "20",
                     "--raft_iter", "20",
                     "--ref_stride", "10"
                 ]
 
+                # =================== 核心修改：实时日志捕获 ===================
+                print(f"    [执行] 推理片段: {seg_name}")
                 try:
-                    subprocess.run(cmd, check=True)
-                    if os.path.exists(mp4_output):
-                        os.makedirs(frames_out_dir, exist_ok=True)
-                        subprocess.run(['ffmpeg', '-y', '-i', mp4_output, '-start_number', '0',
-                                        os.path.join(frames_out_dir, '%04d.png')], check=True,
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except subprocess.CalledProcessError:
-                    print(f"推理失败: {seg_name}")
+                    # 使用 Popen 而不是 run，以便实时读取 stdout
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,  # 将 stderr 合并到 stdout
+                        cwd=current_dir,
+                        universal_newlines=True,
+                        encoding='utf-8',
+                        errors='replace'  # 防止编码错误导致 crash
+                    )
+
+                    # 实时读取日志
+                    while True:
+                        line = process.stdout.readline()
+                        if line == '' and process.poll() is not None:
+                            break
+                        if line:
+                            # 打印到主日志 (去掉末尾换行符，因为 print 会加)
+                            print(f"    | {line.rstrip()}")
+
+                    # 等待进程完全结束
+                    return_code = process.wait()
+
+                    if return_code != 0:
+                        print(f"    [错误] 推理非正常退出 (Code: {return_code})")
+                    else:
+                        # 成功后续处理 (转图片)
+                        mp4_output = os.path.join(seg_out_dir, "inference_output.mp4")
+                        if os.path.exists(mp4_output):
+                            frames_out_dir = os.path.join(seg_out_dir, "frames")
+                            os.makedirs(frames_out_dir, exist_ok=True)
+                            subprocess.run(['ffmpeg', '-y', '-i', mp4_output, '-start_number', '0',
+                                            os.path.join(frames_out_dir, '%04d.png')],
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception as e:
+                    print(f"    [异常] 执行出错: {e}")
+                # =============================================================
 
                 try:
                     shutil.rmtree(current_input_dir)
@@ -451,26 +490,22 @@ def main():
                 except:
                     pass
 
-                base_percent = 40 + (plan_idx / total_plans * 50)
-                current_add = (1.0 / total_plans) * 50 * ((i + 1) / total_scenes)
-                report_progress("processing", base_percent + current_add)
+                # 更新进度 (按照场景比例递增)
+                # 剩余 80% 的进度分配给场景推理
+                scene_progress = (i + (seg_idx + 1) / len(segments)) / total_scenes
+                current_pct = plan_start_pct + (pct_step * 0.2) + (pct_step * 0.8 * scene_progress)
+                report_progress("processing", current_pct)
 
     # === Step 6: 结果回贴 ===
     print("\n=== Step 6: 合并修复结果到原图 ===")
     report_progress("merging", 90)
-
     final_frames_dir = os.path.join(args.workspace, "full_frames_final")
     setup_dirs(final_frames_dir)
-
-    print(f"[Main] 正在生成 {len(frame_files)} 帧的最终图像...")
 
     merge_worker_tasks = []
     for idx in sorted_indices:
         fname = frame_files_map[idx]
-        relevant_plans = []
-        for task in all_merge_tasks:
-            if task['start_frame'] <= idx < task['end_frame']:
-                relevant_plans.append(task)
+        relevant_plans = [t for t in all_merge_tasks if t['start_frame'] <= idx < t['end_frame']]
         merge_worker_tasks.append((idx, fname, frames_dir, final_frames_dir, relevant_plans))
 
     with ThreadPoolExecutor(max_workers=args.max_workers) as executor:

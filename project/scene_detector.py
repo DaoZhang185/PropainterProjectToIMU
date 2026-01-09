@@ -1,10 +1,20 @@
-import argparse
+import sys
 import os
+
+# =================================================================
+# 【路径修复】确保脚本能引用上级目录（根目录）的模块 (core, model, utils)
+# =================================================================
+current_dir = os.path.dirname(os.path.abspath(__file__))  # .../ProPainter/project
+root_dir = os.path.dirname(current_dir)                   # .../ProPainter
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+# =================================================================
+
+import argparse
 import json
 import cv2
 import numpy as np
 import glob
-import sys
 
 
 def detect_scenes_from_folder(folder_path, threshold=10.0, min_scene_frames=5):
