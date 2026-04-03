@@ -83,12 +83,16 @@ def load_poses_from_json(json_path):
                 large_boxes = region_data.get('largeBoxes', [])
                 for box in large_boxes:
                     try:
-                        # 确保转换为浮点数再取整
-                        x = int(float(box['x']))
-                        y = int(float(box['y']))
-                        w = int(float(box['width']))
-                        h = int(float(box['height']))
-                        coords_list.append([x, y, x + w, y + h])
+                        # ======= 【新增】如果是多边形数据 =======
+                        if 'polygon' in box:
+                            coords_list.append(box['polygon'])
+                        # ======= 否则是普通矩形数据 =======
+                        else:
+                            x = int(float(box['x']))
+                            y = int(float(box['y']))
+                            w = int(float(box['width']))
+                            h = int(float(box['height']))
+                            coords_list.append([x, y, x + w, y + h])
                     except (ValueError, KeyError) as e:
                         print(f"  ⚠ 解析 {type_name} largeBox 出错: {e}")
 
@@ -96,11 +100,16 @@ def load_poses_from_json(json_path):
                 small_boxes = region_data.get('smallBoxes', [])
                 for box in small_boxes:
                     try:
-                        x = int(float(box['x']))
-                        y = int(float(box['y']))
-                        w = int(float(box['width']))
-                        h = int(float(box['height']))
-                        coords_list.append([x, y, x + w, y + h])
+                        # ======= 【新增】如果是多边形数据 =======
+                        if 'polygon' in box:
+                            coords_list.append(box['polygon'])
+                        # ======= 否则是普通矩形数据 =======
+                        else:
+                            x = int(float(box['x']))
+                            y = int(float(box['y']))
+                            w = int(float(box['width']))
+                            h = int(float(box['height']))
+                            coords_list.append([x, y, x + w, y + h])
                     except (ValueError, KeyError) as e:
                         print(f"  ⚠ 解析 {type_name} smallBox 出错: {e}")
 
