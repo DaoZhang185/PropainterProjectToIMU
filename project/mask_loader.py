@@ -15,22 +15,6 @@ import json
 def load_poses_from_json(json_path):
     """
     从前端生成的JSON文件中读取Mask坐标并转换为poses格式
-
-    JSON结构:
-    {
-        "regions": {
-            "logo": { "typeName": "台标", "largeBoxes": [...], "smallBoxes": [...] },
-            "subtitle": { ... },
-            "title": { ... }
-        }
-    }
-
-    转换目标 poses 格式:
-    {
-        '1': [[x1, y1, x2, y2], ...],  # 台标 (logo)
-        '2': [[x1, y1, x2, y2], ...],  # 字幕 (subtitle)
-        '3': [[x1, y1, x2, y2], ...]   # 剧名 (title)
-    }
     """
     if not json_path or not os.path.exists(json_path):
         print(f"✗ 错误: Mask JSON文件未找到: {json_path}")
@@ -43,7 +27,6 @@ def load_poses_from_json(json_path):
         poses = {}
 
         # 映射关系: typeName -> key
-        # 务必确保前端 typeName 和这里匹配
         type_mapping = {
             '台标': '1',
             '字幕': '2',
@@ -59,16 +42,13 @@ def load_poses_from_json(json_path):
             if 'regions' in data:
                 regions = data['regions']
             else:
-                # 尝试直接解析根字典（如果是旧格式）
                 regions = data
 
         print(f"✓ 开始解析Mask JSON，找到区域: {list(regions.keys())}")
 
         for region_key, region_data in regions.items():
-            # 获取类型名称，如果没找到typeName，尝试用key映射
             type_name = region_data.get('typeName', region_key)
 
-            # 确定 pose_key (1, 2, or 3)
             pose_key = None
             if type_name in type_mapping:
                 pose_key = type_mapping[type_name]
@@ -76,35 +56,41 @@ def load_poses_from_json(json_path):
                 pose_key = type_mapping[region_key]
 
             if pose_key:
-                coords_list = []
+                large_list = []
+                small_list = []
 
-                # --- 提取处理框的公共逻辑 ---
-                def process_boxes(box_list, box_type):
+                def process_boxes(box_list, box_type, target_list):
                     for box in box_list:
                         try:
-                            # 【修复点】严谨判断键名，兼容多边形与矩形，防止 KeyError
                             if 'polygon' in box and box['polygon']:
-                                coords_list.append(box['polygon'])
+                                target_list.append(box['polygon'])
                             elif all(k in box for k in ('x', 'y', 'width', 'height')):
                                 x = int(float(box['x']))
                                 y = int(float(box['y']))
                                 w = int(float(box['width']))
                                 h = int(float(box['height']))
-                                coords_list.append([x, y, x + w, y + h])
+                                target_list.append([x, y, x + w, y + h])
                             else:
                                 print(f"  ⚠ 忽略未知的 {type_name} {box_type} 数据格式")
                         except Exception as e:
                             print(f"  ⚠ 解析 {type_name} {box_type} 出错: {e}")
 
-                # 1. 处理 largeBoxes
-                process_boxes(region_data.get('largeBoxes', []), 'largeBox')
+                process_boxes(region_data.get('largeBoxes', []), 'largeBox', large_list)
+                process_boxes(region_data.get('smallBoxes', []), 'smallBox', small_list)
 
-                # 2. 处理 smallBoxes
-                process_boxes(region_data.get('smallBoxes', []), 'smallBox')
+                # =========================================================
+                # 【核心修复】智能防覆盖机制，防止大框把魔法棒涂成白板
+                # =========================================================
+                if pose_key in ['1', '3']:  # 静态区域（台标、剧名）
+                    # 如果画了魔法棒/小框，就只画魔法棒，直接抛弃红色大框
+                    coords_list = small_list if small_list else large_list
+                else:  # 动态区域（字幕）
+                    # 字幕必须要红色大框来确定阈值扫描范围，合并保留
+                    coords_list = large_list + small_list
 
                 if coords_list:
                     poses[pose_key] = coords_list
-                    print(f"  ✓ 加载 {type_name} (key={pose_key}): {len(coords_list)} 个框")
+                    print(f"  ✓ 加载 {type_name} (key={pose_key}): {len(coords_list)} 个有效形状")
             else:
                 print(f"  ℹ 跳过未知区域类型: {region_key} / {type_name}")
 

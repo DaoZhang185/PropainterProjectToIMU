@@ -124,18 +124,12 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
     for key, coords_list in all_poses.items():
         if not coords_list: continue
 
-        # =========================================================
-        # 【核心修复】兼容多边形和矩形坐标，计算区域极限边界
-        # 抛弃直接 np.array(coords_list) 防止 inhomogeneous 报错
-        # =========================================================
         all_x, all_y = [], []
         for item in coords_list:
             if len(item) == 4 and isinstance(item[0], (int, float)):
-                # 是普通矩形框 [x1, y1, x2, y2]
                 all_x.extend([item[0], item[2]])
                 all_y.extend([item[1], item[3]])
             elif isinstance(item, list) and isinstance(item[0], (list, tuple)):
-                # 是多边形 [[x,y], [x,y]...]
                 pts = np.array(item)
                 all_x.extend(pts[:, 0])
                 all_y.extend(pts[:, 1])
@@ -145,7 +139,6 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
 
         x1, y1 = min(all_x), min(all_y)
         x2, y2 = max(all_x), max(all_y)
-        # =========================================================
 
         nx1 = max(0, x1 - padding)
         ny1 = max(0, y1 - padding)
@@ -360,9 +353,6 @@ def main():
         crop_frames_dir = os.path.join(region_dir, "frames")
         setup_dirs(crop_frames_dir)
 
-        # ==================== 进度条计算逻辑 (解决回跳问题) ====================
-        # 将 10% - 90% 的进度区间分配给所有 plan
-        # 每个 plan 占用区间: plan_start_pct ~ plan_end_pct
         pct_step = 80.0 / total_plans
         plan_start_pct = 10.0 + plan_idx * pct_step
 
@@ -404,8 +394,8 @@ def main():
         results_dir = os.path.join(region_dir, "results")
         temp_inputs_base = os.path.join(region_dir, "temp_inputs")
         temp_masks_base = os.path.join(region_dir, "temp_masks")
-        setup_dirs(results_dir);
-        setup_dirs(temp_inputs_base);
+        setup_dirs(results_dir)
+        setup_dirs(temp_inputs_base)
         setup_dirs(temp_masks_base)
 
         total_scenes = len(scene_indices) - 1
@@ -430,7 +420,7 @@ def main():
                 current_mask_dir = os.path.join(temp_masks_base, seg_name)
                 if os.path.exists(current_input_dir): shutil.rmtree(current_input_dir)
                 if os.path.exists(current_mask_dir): shutil.rmtree(current_mask_dir)
-                os.makedirs(current_input_dir);
+                os.makedirs(current_input_dir)
                 os.makedirs(current_mask_dir)
 
                 valid_count = 0
@@ -451,6 +441,10 @@ def main():
 
                 if valid_count == 0: continue
 
+                # =============================================================
+                # 【核心修复】加入 --subvideo_length 30 限制每次塞进显卡的图片数量
+                # 防止出现 RuntimeError: CUDA out of memory
+                # =============================================================
                 cmd = [
                     sys.executable, args.model_path,
                     "--video", current_input_dir,
@@ -460,39 +454,34 @@ def main():
                     "--mask_dilation", "4",
                     "--flow_mask_dilation", "20",
                     "--raft_iter", "20",
-                    "--ref_stride", "10"
+                    "--ref_stride", "10",
+                    "--subvideo_length", "30"  # <--- 救命稻草：解决显存崩溃
                 ]
 
-                # =================== 核心修改：实时日志捕获 ===================
                 print(f"    [执行] 推理片段: {seg_name}")
                 try:
-                    # 使用 Popen 而不是 run，以便实时读取 stdout
                     process = subprocess.Popen(
                         cmd,
                         stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,  # 将 stderr 合并到 stdout
+                        stderr=subprocess.STDOUT,
                         cwd=current_dir,
                         universal_newlines=True,
                         encoding='utf-8',
-                        errors='replace'  # 防止编码错误导致 crash
+                        errors='replace'
                     )
 
-                    # 实时读取日志
                     while True:
                         line = process.stdout.readline()
                         if line == '' and process.poll() is not None:
                             break
                         if line:
-                            # 打印到主日志 (去掉末尾换行符，因为 print 会加)
                             print(f"    | {line.rstrip()}")
 
-                    # 等待进程完全结束
                     return_code = process.wait()
 
                     if return_code != 0:
                         print(f"    [错误] 推理非正常退出 (Code: {return_code})")
                     else:
-                        # 成功后续处理 (转图片)
                         mp4_output = os.path.join(seg_out_dir, "inference_output.mp4")
                         if os.path.exists(mp4_output):
                             frames_out_dir = os.path.join(seg_out_dir, "frames")
@@ -502,7 +491,6 @@ def main():
                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception as e:
                     print(f"    [异常] 执行出错: {e}")
-                # =============================================================
 
                 try:
                     shutil.rmtree(current_input_dir)
@@ -510,8 +498,6 @@ def main():
                 except:
                     pass
 
-                # 更新进度 (按照场景比例递增)
-                # 剩余 80% 的进度分配给场景推理
                 scene_progress = (i + (seg_idx + 1) / len(segments)) / total_scenes
                 current_pct = plan_start_pct + (pct_step * 0.2) + (pct_step * 0.8 * scene_progress)
                 report_progress("processing", current_pct)
