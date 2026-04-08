@@ -123,9 +123,29 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
     boxes = []
     for key, coords_list in all_poses.items():
         if not coords_list: continue
-        arr = np.array(coords_list)
-        x1, y1 = np.min(arr[:, 0]), np.min(arr[:, 1])
-        x2, y2 = np.max(arr[:, 2]), np.max(arr[:, 3])
+
+        # =========================================================
+        # 【核心修复】兼容多边形和矩形坐标，计算区域极限边界
+        # 抛弃直接 np.array(coords_list) 防止 inhomogeneous 报错
+        # =========================================================
+        all_x, all_y = [], []
+        for item in coords_list:
+            if len(item) == 4 and isinstance(item[0], (int, float)):
+                # 是普通矩形框 [x1, y1, x2, y2]
+                all_x.extend([item[0], item[2]])
+                all_y.extend([item[1], item[3]])
+            elif isinstance(item, list) and isinstance(item[0], (list, tuple)):
+                # 是多边形 [[x,y], [x,y]...]
+                pts = np.array(item)
+                all_x.extend(pts[:, 0])
+                all_y.extend(pts[:, 1])
+
+        if not all_x or not all_y:
+            continue
+
+        x1, y1 = min(all_x), min(all_y)
+        x2, y2 = max(all_x), max(all_y)
+        # =========================================================
 
         nx1 = max(0, x1 - padding)
         ny1 = max(0, y1 - padding)
