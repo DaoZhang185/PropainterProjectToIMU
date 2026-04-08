@@ -12,7 +12,6 @@ if root_dir not in sys.path:
 
 import json
 
-
 def load_poses_from_json(json_path):
     """
     从前端生成的JSON文件中读取Mask坐标并转换为poses格式
@@ -79,39 +78,29 @@ def load_poses_from_json(json_path):
             if pose_key:
                 coords_list = []
 
+                # --- 提取处理框的公共逻辑 ---
+                def process_boxes(box_list, box_type):
+                    for box in box_list:
+                        try:
+                            # 【修复点】严谨判断键名，兼容多边形与矩形，防止 KeyError
+                            if 'polygon' in box and box['polygon']:
+                                coords_list.append(box['polygon'])
+                            elif all(k in box for k in ('x', 'y', 'width', 'height')):
+                                x = int(float(box['x']))
+                                y = int(float(box['y']))
+                                w = int(float(box['width']))
+                                h = int(float(box['height']))
+                                coords_list.append([x, y, x + w, y + h])
+                            else:
+                                print(f"  ⚠ 忽略未知的 {type_name} {box_type} 数据格式")
+                        except Exception as e:
+                            print(f"  ⚠ 解析 {type_name} {box_type} 出错: {e}")
+
                 # 1. 处理 largeBoxes
-                large_boxes = region_data.get('largeBoxes', [])
-                for box in large_boxes:
-                    try:
-                        # ======= 【新增】如果是多边形数据 =======
-                        if 'polygon' in box:
-                            coords_list.append(box['polygon'])
-                        # ======= 否则是普通矩形数据 =======
-                        else:
-                            x = int(float(box['x']))
-                            y = int(float(box['y']))
-                            w = int(float(box['width']))
-                            h = int(float(box['height']))
-                            coords_list.append([x, y, x + w, y + h])
-                    except (ValueError, KeyError) as e:
-                        print(f"  ⚠ 解析 {type_name} largeBox 出错: {e}")
+                process_boxes(region_data.get('largeBoxes', []), 'largeBox')
 
                 # 2. 处理 smallBoxes
-                small_boxes = region_data.get('smallBoxes', [])
-                for box in small_boxes:
-                    try:
-                        # ======= 【新增】如果是多边形数据 =======
-                        if 'polygon' in box:
-                            coords_list.append(box['polygon'])
-                        # ======= 否则是普通矩形数据 =======
-                        else:
-                            x = int(float(box['x']))
-                            y = int(float(box['y']))
-                            w = int(float(box['width']))
-                            h = int(float(box['height']))
-                            coords_list.append([x, y, x + w, y + h])
-                    except (ValueError, KeyError) as e:
-                        print(f"  ⚠ 解析 {type_name} smallBox 出错: {e}")
+                process_boxes(region_data.get('smallBoxes', []), 'smallBox')
 
                 if coords_list:
                     poses[pose_key] = coords_list

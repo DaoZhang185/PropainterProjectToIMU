@@ -44,49 +44,59 @@ def process_single_frame_mask(img_path, local_poses, output_dir, static_keys, th
     # 创建全黑 Mask
     mask = np.zeros_like(img)
     has_content = False
+    h_m, w_m = mask.shape
 
     for key, coords in local_poses.items():
         is_static = (key in static_keys)
 
         for item in coords:
+            # 判断数据类型是多边形(魔法棒)还是矩形(普通画框)
+            is_poly = isinstance(item, list) and isinstance(item[0], (list, tuple))
+            is_rect = len(item) == 4 and isinstance(item[0], (int, float))
+
+            if not (is_poly or is_rect):
+                continue
+
             # ==========================================================
-            # 【修改点 1】兼容旧版本：如果是长度为4的列表，说明是矩形框 [x1, y1, x2, y2]
+            # 【核心业务逻辑分类处理】
             # ==========================================================
-            if len(item) == 4 and isinstance(item[0], (int, float)):
-                x1, y1, x2, y2 = map(int, item)
-                h_m, w_m = mask.shape
+            if is_static:
+                # 1. 静态区域 (台标、剧名): 直接画成纯白色的实心块
+                if is_poly:
+                    pts = np.array(item, dtype=np.int32)
+                    cv2.fillPoly(mask, [pts], 255)
+                    has_content = True
+                else:
+                    x1, y1, x2, y2 = map(int, item)
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(w_m, x2), min(h_m, y2)
+                    if x2 > x1 and y2 > y1:
+                        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
+                        has_content = True
+            else:
+                # 2. 动态区域 (字幕): 【强制】使用原有的亮度阈值处理
+                # 如果用户不小心对字幕用了魔法棒(多边形)，这里会自动提取其外接矩形，确保阈值处理照常运行！
+                if is_poly:
+                    pts = np.array(item, dtype=np.int32)
+                    x, y, w, h = cv2.boundingRect(pts)
+                    x1, y1, x2, y2 = x, y, x + w, y + h
+                else:
+                    x1, y1, x2, y2 = map(int, item)
+
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(w_m, x2), min(h_m, y2)
 
-                if x2 <= x1 or y2 <= y1:
-                    continue
-
-                if is_static:
-                    # 旧逻辑：静态区域直接画白色矩形
-                    cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
-                    has_content = True
-                else:
-                    # 旧逻辑：动态区域通过阈值二值化提取亮度文字
+                if x2 > x1 and y2 > y1:
+                    # 沿用之前的阈值二值化提取亮度文字逻辑
                     roi = img[y1:y2, x1:x2]
                     _, bin_roi = cv2.threshold(roi, threshold, 255, cv2.THRESH_BINARY)
                     mask[y1:y2, x1:x2] = np.maximum(mask[y1:y2, x1:x2], bin_roi)
                     has_content = True
 
-            # ==========================================================
-            # 【修改点 2】兼容 SAM：如果是嵌套列表，说明是多边形 [[x1,y1], [x2,y2], ...]
-            # ==========================================================
-            elif isinstance(item, list) and isinstance(item[0], (list, tuple)):
-                # 既然 SAM 已经帮我们找出了最精准的边缘（无论是台标还是文字）
-                # 我们直接把这个多边形区域填满成纯白色 Mask 即可！无需再做二值化！
-                pts = np.array(item, dtype=np.int32)
-                cv2.fillPoly(mask, [pts], 255)
-                has_content = True
-
     # ==========================================================
-    # 【修改点 3】强力膨胀：向外扩充 10-20 像素，消除半透明边缘鬼影
+    # 强力膨胀：向外扩充，消除半透明边缘鬼影
     # ==========================================================
     if has_content:
-        # 使用更大的 5x5 卷积核，并迭代 3 次，大概能向外扩散 12~15 个像素
         kernel = np.ones((5, 5), np.uint8)
         mask = cv2.dilate(mask, kernel, iterations=3)
 
@@ -115,9 +125,7 @@ def generate_local_masks(frame_dir, output_dir, original_poses, crop_coords, sta
     for key, coords_list in original_poses.items():
         local_list = []
         for item in coords_list:
-            # ==========================================================
-            # 【修改点 4】坐标转换兼容：处理旧矩形框的坐标偏移
-            # ==========================================================
+            # 兼容旧矩形框
             if len(item) == 4 and isinstance(item[0], (int, float)):
                 gx1, gy1, gx2, gy2 = item
                 lx1, ly1 = max(0, gx1 - cx1), max(0, gy1 - cy1)
@@ -125,17 +133,13 @@ def generate_local_masks(frame_dir, output_dir, original_poses, crop_coords, sta
                 if lx2 > lx1 and ly2 > ly1:
                     local_list.append([lx1, ly1, lx2, ly2])
 
-            # ==========================================================
-            # 【修改点 5】坐标转换兼容：处理 SAM 多边形的坐标偏移
-            # ==========================================================
+            # 兼容多边形
             elif isinstance(item, list) and isinstance(item[0], (list, tuple)):
                 poly_local = []
                 for pt in item:
-                    # 对多边形的每一个点进行偏移扣减并限制在小图边界内
                     lx = max(0, min(crop_w, pt[0] - cx1))
                     ly = max(0, min(crop_h, pt[1] - cy1))
                     poly_local.append([lx, ly])
-                # 多边形至少需要3个点
                 if len(poly_local) >= 3:
                     local_list.append(poly_local)
 
@@ -151,25 +155,20 @@ def generate_local_masks(frame_dir, output_dir, original_poses, crop_coords, sta
     static_mask = np.zeros((h, w), dtype=np.uint8)
     has_static_content = False
 
+    # 注意：这里有 key in static_keys 拦截，所以动态字幕(key=2)绝对不会生成静态 Mask
     for key, coords in local_poses.items():
         if key in static_keys:
             for item in coords:
-                # ==========================================================
-                # 【修改点 6】静态基准图也需要兼容多边形绘制
-                # ==========================================================
-                if len(item) == 4 and isinstance(item[0], (int, float)):  # 旧矩形
+                if len(item) == 4 and isinstance(item[0], (int, float)):
                     x1, y1, x2, y2 = map(int, item)
                     cv2.rectangle(static_mask, (x1, y1), (x2, y2), 255, -1)
                     has_static_content = True
-                elif isinstance(item, list) and isinstance(item[0], (list, tuple)):  # 多边形
+                elif isinstance(item, list) and isinstance(item[0], (list, tuple)):
                     pts = np.array(item, dtype=np.int32)
                     cv2.fillPoly(static_mask, [pts], 255)
                     has_static_content = True
 
     if has_static_content:
-        # ==========================================================
-        # 【修改点 7】静态基准图统一加大膨胀力度 (扩展10-20像素)
-        # ==========================================================
         kernel = np.ones((5, 5), np.uint8)
         static_mask = cv2.dilate(static_mask, kernel, iterations=3)
 
