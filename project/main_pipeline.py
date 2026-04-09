@@ -121,6 +121,7 @@ def get_recursive_segments(start_idx, end_idx, max_frames=300):
 
 def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
     boxes = []
+    # 1. 计算每个区域带有外扩的基础矩形（暂不考虑重叠和16像素对齐）
     for key, coords_list in all_poses.items():
         if not coords_list: continue
 
@@ -140,24 +141,11 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
         x1, y1 = min(all_x), min(all_y)
         x2, y2 = max(all_x), max(all_y)
 
+        # 加上你想保留的高额 padding
         nx1 = max(0, x1 - padding)
         ny1 = max(0, y1 - padding)
         nx2 = min(img_w, x2 + padding)
         ny2 = min(img_h, y2 + padding)
-
-        w = nx2 - nx1
-        h = ny2 - ny1
-        pad_w = (16 - (w % 16)) % 16
-        pad_h = (16 - (h % 16)) % 16
-
-        if nx2 + pad_w <= img_w:
-            nx2 += pad_w
-        else:
-            nx1 = max(0, nx1 - pad_w)
-        if ny2 + pad_h <= img_h:
-            ny2 += pad_h
-        else:
-            ny1 = max(0, ny1 - pad_h)
 
         boxes.append({
             "keys": [key],
@@ -165,31 +153,77 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
             "original_poses": {key: coords_list}
         })
 
-    merged = True
-    while merged:
-        merged = False
-        new_boxes = []
-        skip_indices = set()
+    # 2. 核心修改：遇到重叠时不再合并，而是“平均切分”重叠区域！
+    adjusted = True
+    iterations = 0
+    # 使用 while 循环确保多次切分后所有框都不再重叠（最多迭代10次防止死循环）
+    while adjusted and iterations < 10:
+        adjusted = False
+        iterations += 1
         for i in range(len(boxes)):
-            if i in skip_indices: continue
-            curr = boxes[i]
-            cx1, cy1, cx2, cy2 = curr["crop_coords"]
+            cx1, cy1, cx2, cy2 = boxes[i]["crop_coords"]
+            c_center_x = (cx1 + cx2) / 2.0
+            c_center_y = (cy1 + cy2) / 2.0
+
             for j in range(i + 1, len(boxes)):
-                if j in skip_indices: continue
-                other = boxes[j]
-                ox1, oy1, ox2, oy2 = other["crop_coords"]
-                if not (cx2 < ox1 or cx1 > ox2 or cy2 < oy1 or cy1 > oy2):
-                    cx1 = min(cx1, ox1)
-                    cy1 = min(cy1, oy1)
-                    cx2 = max(cx2, ox2)
-                    cy2 = max(cy2, oy2)
-                    curr["keys"].extend(other["keys"])
-                    curr["original_poses"].update(other["original_poses"])
-                    skip_indices.add(j)
-                    merged = True
-            curr["crop_coords"] = [cx1, cy1, cx2, cy2]
-            new_boxes.append(curr)
-        boxes = new_boxes
+                ox1, oy1, ox2, oy2 = boxes[j]["crop_coords"]
+
+                # 检查两个区域是否发生了重叠
+                if not (cx2 <= ox1 or cx1 >= ox2 or cy2 <= oy1 or cy1 >= oy2):
+                    o_center_x = (ox1 + ox2) / 2.0
+                    o_center_y = (oy1 + oy2) / 2.0
+
+                    dx = c_center_x - o_center_x
+                    dy = c_center_y - o_center_y
+
+                    # 判断它们主要是左右相邻，还是上下相邻
+                    if abs(dx) > abs(dy):
+                        # 左右相邻，在 X 轴重叠部分的中心切一刀垂直线
+                        if cx1 < ox1:  # i在左，j在右
+                            mid = (ox1 + cx2) // 2
+                            cx2 = mid
+                            ox1 = mid
+                        else:  # i在右，j在左
+                            mid = (cx1 + ox2) // 2
+                            cx1 = mid
+                            ox2 = mid
+                    else:
+                        # 上下相邻，在 Y 轴重叠部分的中心切一刀水平线
+                        if cy1 < oy1:  # i在上，j在下
+                            mid = (oy1 + cy2) // 2
+                            cy2 = mid
+                            oy1 = mid
+                        else:  # i在下，j在上
+                            mid = (cy1 + oy2) // 2
+                            cy1 = mid
+                            oy2 = mid
+
+                    # 将切分后的新边界保存回去
+                    boxes[i]["crop_coords"] = [cx1, cy1, cx2, cy2]
+                    boxes[j]["crop_coords"] = [ox1, oy1, ox2, oy2]
+                    adjusted = True
+
+    # 3. 最后，强制满足 ProPainter 必须的 16 像素对齐规则
+    for i in range(len(boxes)):
+        nx1, ny1, nx2, ny2 = boxes[i]["crop_coords"]
+        w = nx2 - nx1
+        h = ny2 - ny1
+        pad_w = (16 - (w % 16)) % 16
+        pad_h = (16 - (h % 16)) % 16
+
+        # 对齐时优先向右/下扩展，如果越界则向左/上借位
+        if nx2 + pad_w <= img_w:
+            nx2 += pad_w
+        else:
+            nx1 = max(0, nx1 - pad_w)
+
+        if ny2 + pad_h <= img_h:
+            ny2 += pad_h
+        else:
+            ny1 = max(0, ny1 - pad_h)
+
+        boxes[i]["crop_coords"] = [int(nx1), int(ny1), int(nx2), int(ny2)]
+
     return boxes
 
 
