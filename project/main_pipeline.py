@@ -20,6 +20,9 @@ import glob
 import datetime
 import math
 from concurrent.futures import ThreadPoolExecutor
+import queue
+import threading
+import time
 
 
 # =================================================================
@@ -32,7 +35,6 @@ class DualLogger(object):
 
     def __init__(self, filepath):
         self.terminal = sys.stdout
-        # line buffering 确保写入及时
         self.log = open(filepath, "a", encoding='utf-8', buffering=1)
 
     def write(self, message):
@@ -77,7 +79,6 @@ def setup_dirs(base_path):
 
 
 def extract_frames_ffmpeg(video_path, output_dir):
-    """使用 FFmpeg 提取帧"""
     if not os.path.exists(video_path):
         print(f"[Error] 视频文件不存在: {video_path}")
         return False
@@ -121,7 +122,6 @@ def get_recursive_segments(start_idx, end_idx, max_frames=300):
 
 def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
     boxes = []
-    # 1. 计算每个区域带有外扩的基础矩形（暂不考虑重叠和16像素对齐）
     for key, coords_list in all_poses.items():
         if not coords_list: continue
 
@@ -141,7 +141,6 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
         x1, y1 = min(all_x), min(all_y)
         x2, y2 = max(all_x), max(all_y)
 
-        # 加上你想保留的高额 padding
         nx1 = max(0, x1 - padding)
         ny1 = max(0, y1 - padding)
         nx2 = min(img_w, x2 + padding)
@@ -153,10 +152,8 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
             "original_poses": {key: coords_list}
         })
 
-    # 2. 核心修改：遇到重叠时不再合并，而是“平均切分”重叠区域！
     adjusted = True
     iterations = 0
-    # 使用 while 循环确保多次切分后所有框都不再重叠（最多迭代10次防止死循环）
     while adjusted and iterations < 10:
         adjusted = False
         iterations += 1
@@ -167,8 +164,6 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
 
             for j in range(i + 1, len(boxes)):
                 ox1, oy1, ox2, oy2 = boxes[j]["crop_coords"]
-
-                # 检查两个区域是否发生了重叠
                 if not (cx2 <= ox1 or cx1 >= ox2 or cy2 <= oy1 or cy1 >= oy2):
                     o_center_x = (ox1 + ox2) / 2.0
                     o_center_y = (oy1 + oy2) / 2.0
@@ -176,34 +171,29 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
                     dx = c_center_x - o_center_x
                     dy = c_center_y - o_center_y
 
-                    # 判断它们主要是左右相邻，还是上下相邻
                     if abs(dx) > abs(dy):
-                        # 左右相邻，在 X 轴重叠部分的中心切一刀垂直线
-                        if cx1 < ox1:  # i在左，j在右
+                        if cx1 < ox1:
                             mid = (ox1 + cx2) // 2
                             cx2 = mid
                             ox1 = mid
-                        else:  # i在右，j在左
+                        else:
                             mid = (cx1 + ox2) // 2
                             cx1 = mid
                             ox2 = mid
                     else:
-                        # 上下相邻，在 Y 轴重叠部分的中心切一刀水平线
-                        if cy1 < oy1:  # i在上，j在下
+                        if cy1 < oy1:
                             mid = (oy1 + cy2) // 2
                             cy2 = mid
                             oy1 = mid
-                        else:  # i在下，j在上
+                        else:
                             mid = (cy1 + oy2) // 2
                             cy1 = mid
                             oy2 = mid
 
-                    # 将切分后的新边界保存回去
                     boxes[i]["crop_coords"] = [cx1, cy1, cx2, cy2]
                     boxes[j]["crop_coords"] = [ox1, oy1, ox2, oy2]
                     adjusted = True
 
-    # 3. 最后，强制满足 ProPainter 必须的 16 像素对齐规则
     for i in range(len(boxes)):
         nx1, ny1, nx2, ny2 = boxes[i]["crop_coords"]
         w = nx2 - nx1
@@ -211,7 +201,6 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
         pad_w = (16 - (w % 16)) % 16
         pad_h = (16 - (h % 16)) % 16
 
-        # 对齐时优先向右/下扩展，如果越界则向左/上借位
         if nx2 + pad_w <= img_w:
             nx2 += pad_w
         else:
@@ -309,14 +298,12 @@ def main():
     parser.add_argument('--output_video', default='final_output.mp4', help='最终输出视频文件名')
     parser.add_argument('--max_frames', type=int, default=300, help='单次推理最大帧数限制')
     parser.add_argument('--padding', type=int, default=150, help='裁切区域外扩像素')
-    parser.add_argument('--max_workers', type=int, default=8, help='并行处理线程数')
+    parser.add_argument('--max_workers', type=int, default=8, help='最大并行处理线程数')
     args = parser.parse_args()
 
-    # 路径绝对化
     if not os.path.isabs(args.model_path):
         args.model_path = os.path.join(current_dir, args.model_path)
 
-    # 0. 初始化
     report_progress("start", 0)
 
     video_name = os.path.splitext(os.path.basename(args.video))[0]
@@ -331,7 +318,7 @@ def main():
     print(f"\n[Main] ===========================================")
     print(f"[Main] 任务启动: {video_name}")
     print(f"[Main] 工作目录: {args.workspace}")
-    print(f"[Main] 日志文件: {log_file_path}")
+    print(f"[Main] 允许最高并发: {args.max_workers}")
     print(f"[Main] ===========================================\n")
 
     # === Step 1: 视频转全量帧 ===
@@ -390,7 +377,6 @@ def main():
         pct_step = 80.0 / total_plans
         plan_start_pct = 10.0 + plan_idx * pct_step
 
-        # 1. 裁切 (占该区域进度的 10%)
         print(f"    裁切中...")
         tasks = []
         for fname in frame_files:
@@ -400,10 +386,8 @@ def main():
         with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
             list(executor.map(crop_worker, tasks))
 
-        current_pct = plan_start_pct + (pct_step * 0.1)
-        report_progress(f"cropping_{region_id}", current_pct)
+        report_progress(f"cropping_{region_id}", plan_start_pct + (pct_step * 0.1))
 
-        # 2. 场景检测
         print(f"    检测场景...")
         scene_json_path = os.path.join(region_dir, f"{region_name}_scenes.json")
         scene_indices = detect_scenes_from_folder(crop_frames_dir, threshold=6.0)
@@ -414,17 +398,17 @@ def main():
         with open(scene_json_path, 'w') as f:
             json.dump(scene_indices, f)
 
-        # 3. 生成 Mask (占该区域进度的 10%)
         print(f"    生成 Mask...")
         mask_output_dir = os.path.join(region_dir, "masks")
         generate_local_masks(crop_frames_dir, mask_output_dir, plan['original_poses'], plan['crop_coords'],
-                             static_keys=['1', '3'])
+                             static_keys=['1', '3', '4'])
 
-        current_pct = plan_start_pct + (pct_step * 0.2)
-        report_progress(f"mask_gen_{region_id}", current_pct)
+        report_progress(f"mask_gen_{region_id}", plan_start_pct + (pct_step * 0.2))
 
-        # 4. 分段推理 (占该区域进度的 80%)
-        print(f"    开始推理 (后端模型调用)...")
+        # =======================================================================
+        # 【核心重构：动态智能调度池 - AIMD算法】
+        # =======================================================================
+        print(f"    开始智能调度推理 (防OOM并发)...")
         results_dir = os.path.join(region_dir, "results")
         temp_inputs_base = os.path.join(region_dir, "temp_inputs")
         temp_masks_base = os.path.join(region_dir, "temp_masks")
@@ -432,7 +416,10 @@ def main():
         setup_dirs(temp_inputs_base)
         setup_dirs(temp_masks_base)
 
+        inference_tasks = []
         total_scenes = len(scene_indices) - 1
+
+        # 第一阶段：将所有的任务分片打包进列表
         for i in range(total_scenes):
             scene_start = scene_indices[i]
             scene_end = scene_indices[i + 1]
@@ -449,7 +436,6 @@ def main():
                     'end_frame': seg_end
                 })
 
-                # 准备临时目录
                 current_input_dir = os.path.join(temp_inputs_base, seg_name)
                 current_mask_dir = os.path.join(temp_masks_base, seg_name)
                 if os.path.exists(current_input_dir): shutil.rmtree(current_input_dir)
@@ -464,6 +450,7 @@ def main():
                     src_f = os.path.abspath(os.path.join(crop_frames_dir, fname))
                     dst_f = os.path.join(current_input_dir, fname)
                     os.symlink(src_f, dst_f)
+
                     src_m = os.path.abspath(os.path.join(mask_output_dir, fname))
                     src_m_static = os.path.abspath(os.path.join(mask_output_dir, "static_mask.png"))
                     dst_m = os.path.join(current_mask_dir, fname)
@@ -473,68 +460,143 @@ def main():
                         os.symlink(src_m_static, dst_m)
                     valid_count += 1
 
-                if valid_count == 0: continue
+                if valid_count > 0:
+                    cmd = [
+                        sys.executable, args.model_path,
+                        "--video", current_input_dir,
+                        "--mask", current_mask_dir,
+                        "--output", seg_out_dir,
+                        "--fp16",
+                        "--mask_dilation", "4",
+                        "--flow_mask_dilation", "20",
+                        "--raft_iter", "20",
+                        "--ref_stride", "10",
+                        "--subvideo_length", "30"
+                    ]
+                    inference_tasks.append({
+                        'seg_name': seg_name,
+                        'cmd': cmd,
+                        'input_dir': current_input_dir,
+                        'mask_dir': current_mask_dir,
+                        'out_dir': seg_out_dir
+                    })
 
-                # =============================================================
-                # 【核心修复】加入 --subvideo_length 30 限制每次塞进显卡的图片数量
-                # 防止出现 RuntimeError: CUDA out of memory
-                # =============================================================
-                cmd = [
-                    sys.executable, args.model_path,
-                    "--video", current_input_dir,
-                    "--mask", current_mask_dir,
-                    "--output", seg_out_dir,
-                    "--fp16",
-                    "--mask_dilation", "4",
-                    "--flow_mask_dilation", "20",
-                    "--raft_iter", "20",
-                    "--ref_stride", "10",
-                    "--subvideo_length", "30"  # <--- 救命稻草：解决显存崩溃
-                ]
+        # 第二阶段：动态分发执行 (AIMD算法)
+        task_queue = queue.Queue()
+        for t in inference_tasks:
+            task_queue.put(t)
 
-                print(f"    [执行] 推理片段: {seg_name}")
-                try:
-                    process = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        cwd=current_dir,
-                        universal_newlines=True,
-                        encoding='utf-8',
-                        errors='replace'
-                    )
+        total_inference_tasks = len(inference_tasks)
+        completed_tasks = 0
 
-                    while True:
-                        line = process.stdout.readline()
-                        if line == '' and process.poll() is not None:
-                            break
-                        if line:
-                            print(f"    | {line.rstrip()}")
+        # 初始并发数设置为 1，安全起步
+        concurrency_limit = 1
+        limit_locked = False
+        active_threads = []
+        print_lock = threading.Lock()
 
-                    return_code = process.wait()
+        def inference_worker(task, result_dict):
+            seg_name = task['seg_name']
+            with print_lock:
+                print(f"    [分配] -> 启动线程处理: {seg_name}")
 
-                    if return_code != 0:
-                        print(f"    [错误] 推理非正常退出 (Code: {return_code})")
-                    else:
-                        mp4_output = os.path.join(seg_out_dir, "inference_output.mp4")
-                        if os.path.exists(mp4_output):
-                            frames_out_dir = os.path.join(seg_out_dir, "frames")
-                            os.makedirs(frames_out_dir, exist_ok=True)
-                            subprocess.run(['ffmpeg', '-y', '-i', mp4_output, '-start_number', '0',
-                                            os.path.join(frames_out_dir, '%04d.png')],
-                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except Exception as e:
-                    print(f"    [异常] 执行出错: {e}")
+            try:
+                process = subprocess.Popen(
+                    task['cmd'],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    cwd=current_dir,
+                    universal_newlines=True,
+                    encoding='utf-8',
+                    errors='replace'
+                )
 
-                try:
-                    shutil.rmtree(current_input_dir)
-                    shutil.rmtree(current_mask_dir)
-                except:
-                    pass
+                is_oom = False
+                while True:
+                    line = process.stdout.readline()
+                    if line == '' and process.poll() is not None:
+                        break
+                    if line:
+                        line_str = line.rstrip()
+                        # 核心：实时嗅探 OOM 报错
+                        if "CUDA out of memory" in line_str or "RuntimeError: CUDA" in line_str:
+                            is_oom = True
+                        # 过滤无用日志，加上片头标签，防止不同线程日志互相干扰
+                        elif "Processing" in line_str or "Network" in line_str or "%|" in line_str:
+                            with print_lock:
+                                print(f"    | [{seg_name}] {line_str}")
 
-                scene_progress = (i + (seg_idx + 1) / len(segments)) / total_scenes
-                current_pct = plan_start_pct + (pct_step * 0.2) + (pct_step * 0.8 * scene_progress)
-                report_progress("processing", current_pct)
+                return_code = process.wait()
+                if is_oom or return_code == 137:
+                    result_dict['status'] = 'oom'
+                elif return_code != 0:
+                    result_dict['status'] = 'error'
+                    result_dict['code'] = return_code
+                else:
+                    mp4_output = os.path.join(task['out_dir'], "inference_output.mp4")
+                    if os.path.exists(mp4_output):
+                        frames_out_dir = os.path.join(task['out_dir'], "frames")
+                        os.makedirs(frames_out_dir, exist_ok=True)
+                        subprocess.run(['ffmpeg', '-y', '-i', mp4_output, '-start_number', '0',
+                                        os.path.join(frames_out_dir, '%04d.png')],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    result_dict['status'] = 'success'
+            except Exception as e:
+                with print_lock:
+                    print(f"    [异常] [{seg_name}] 线程执行出错: {e}")
+                result_dict['status'] = 'error'
+
+        # 主调度循环
+        while not task_queue.empty() or active_threads:
+            # 1. 如果当前活跃线程小于限制，且队列有任务，就补充线程
+            while len(active_threads) < concurrency_limit and not task_queue.empty():
+                task = task_queue.get()
+                result_dict = {}
+                t = threading.Thread(target=inference_worker, args=(task, result_dict))
+                t.task = task
+                t.result_dict = result_dict
+                t.start()
+                active_threads.append(t)
+
+            # 2. 检查是否有线程处理完毕
+            done_threads = [t for t in active_threads if not t.is_alive()]
+            for t in done_threads:
+                active_threads.remove(t)
+                status = t.result_dict.get('status', 'error')
+
+                if status == 'oom':
+                    # 【核心机制】显存爆炸，撤销并回退！
+                    with print_lock:
+                        print(f"    ⚠️ [OOM 拦截] {t.task['seg_name']} 导致显存溢出！撤回排队，并锁定最高并发数。")
+                    concurrency_limit = max(1, concurrency_limit - 1)  # 降低并发
+                    limit_locked = True  # 永久锁定并发数
+                    task_queue.put(t.task)  # 把被 OOM 杀掉的任务重新塞回队列开头
+                elif status == 'success':
+                    completed_tasks += 1
+                    # 【核心机制】游刃有余，尝试新增线程！
+                    if not limit_locked and concurrency_limit < args.max_workers:
+                        concurrency_limit += 1
+                        with print_lock:
+                            print(f"    🚀 [动态升频] 显存充裕，正在提升系统并发线程数至: {concurrency_limit}")
+
+                    # 进度条平滑增长
+                    scene_progress = completed_tasks / total_inference_tasks
+                    current_pct = plan_start_pct + (pct_step * 0.2) + (pct_step * 0.8 * scene_progress)
+                    report_progress("processing", current_pct)
+
+                    # 清理成功跑完的临时垃圾
+                    try:
+                        shutil.rmtree(t.task['input_dir'])
+                        shutil.rmtree(t.task['mask_dir'])
+                    except:
+                        pass
+                else:
+                    code = t.result_dict.get('code', 'Unknown')
+                    with print_lock:
+                        print(f"    ❌ [错误] 任务 {t.task['seg_name']} 执行失败 (Code: {code})")
+                    completed_tasks += 1  # 失败也算走完了进度，防止死循环
+
+            time.sleep(0.5)  # 防止主线程空转占用CPU
 
     # === Step 6: 结果回贴 ===
     print("\n=== Step 6: 合并修复结果到原图 ===")
