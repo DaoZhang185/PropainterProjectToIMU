@@ -83,14 +83,17 @@ class ProcessingTask:
         try:
             self._add_log("准备本地环境，开始处理...")
 
-            # 使用本地 Python 环境执行 project 下的 main_pipeline.py
+            # 【这是针对你 5台机器、4显卡 的推荐启动配置】
             cmd = [
                 sys.executable,
                 os.path.join(PROJECT_DIR, 'main_pipeline.py'),
                 '--video', self.source_video,
                 '--mask_json', self.mask_file,
                 '--workspace', self.workspace,
-                '--padding', '150'
+                '--padding', '150',  # 保持高外扩，防重叠算法会保驾护航
+                '--gpus', '0,1,2,3',  # 明确告诉它使用这 4 张显卡
+                '--scale_delay', '3',  # 稳定处理 3 分钟后，尝试在某张卡上加第二个任务
+                '--cooldown', '10'  # 如果某张卡爆显存，该卡 10 分钟内禁止新增并发
             ]
 
             self._add_log(f"执行命令: {' '.join(cmd)}")
