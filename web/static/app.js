@@ -9,7 +9,6 @@ let currentRect = null;
 let maskRects = [];
 let boxIdCounter = 0;
 
-// 【修改】只保存文件名，不再保存绝对路径
 let currentVideoFilename = '';
 let uploadedMaskFilename = null;
 
@@ -18,7 +17,6 @@ let imageScale = 1;
 let imageOffsetX = 0;
 let imageOffsetY = 0;
 
-// 【精简】去掉了服务器账号和硬编码路径，只需保留一些处理参数的默认值
 const FIXED_SCRIPT_PARAMS = {
     scene_threshold: 20.0,
     min_duration: 0.5,
@@ -34,17 +32,15 @@ const FIXED_SCRIPT_PARAMS = {
     keep_intermediate: true
 };
 
-// 页面初始化
 function initializePage() {
     const sourceVideo = document.getElementById('source-video');
     if (!sourceVideo.value) {
-        sourceVideo.value = 'sample.mp4'; // 默认提供一个 sample
+        sourceVideo.value = 'sample.mp4';
     }
     currentVideoFilename = sourceVideo.value;
     resetCanvas();
 }
 
-// 上传视频
 async function uploadVideo() {
     const fileInput = document.getElementById('video-file');
     if (!fileInput.files[0]) {
@@ -64,7 +60,6 @@ async function uploadVideo() {
         const result = await response.json();
 
         if (response.ok) {
-            // 【修改】只获取文件名
             document.getElementById('source-video').value = result.filename;
             currentVideoFilename = result.filename;
             alert('视频上传成功！');
@@ -76,7 +71,6 @@ async function uploadVideo() {
     }
 }
 
-// 开始处理
 async function startProcessing() {
     const sourceVideo = document.getElementById('source-video').value;
 
@@ -93,8 +87,8 @@ async function startProcessing() {
 
     const scriptParams = {
         ...FIXED_SCRIPT_PARAMS,
-        source_video: currentVideoFilename, // 只传文件名
-        mask_file: uploadedMaskFilename     // 只传文件名
+        source_video: currentVideoFilename,
+        mask_file: uploadedMaskFilename
     };
 
     try {
@@ -104,7 +98,7 @@ async function startProcessing() {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                script_params: scriptParams // 【修改】不再传 server_config
+                script_params: scriptParams
             })
         });
 
@@ -123,7 +117,6 @@ async function startProcessing() {
     }
 }
 
-// 停止处理
 async function cancelProcessing() {
     if (!currentTaskId) return;
     try {
@@ -134,7 +127,6 @@ async function cancelProcessing() {
     }
 }
 
-// 下载视频
 async function downloadVideo() {
     if (!currentTaskId) {
         alert('没有可用的视频文件');
@@ -163,7 +155,6 @@ async function downloadVideo() {
     }
 }
 
-// Mask制作功能 - 提取帧
 async function extractFrame() {
     if (!currentVideoFilename) {
         alert('请先选择或上传视频');
@@ -188,7 +179,7 @@ async function extractFrame() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                video_filename: currentVideoFilename, // 【修改】只传文件名
+                video_filename: currentVideoFilename,
                 timestamp: timestamp
             }),
             signal: controller.signal
@@ -236,7 +227,6 @@ async function extractFrame() {
     }
 }
 
-// 计算图像显示尺寸和缩放比例
 function calculateImageDisplay(maskImage) {
     const container = document.getElementById('mask-container');
     const containerWidth = container.clientWidth;
@@ -318,8 +308,20 @@ function initDrawing() {
 
         const type = document.getElementById('regionType').value;
         const mode = document.getElementById('drawMode').value;
+        let timeRange = "";
 
-        // ====== 魔法棒模式，直接触发智能抠图 ======
+        // ====== 时间范围提取 ======
+        if (type === 'other') {
+            timeRange = document.getElementById('otherTimeRange').value.trim();
+            if (!timeRange || !/^\d+-\d+$/.test(timeRange)) {
+                alert('请填写正确的生效时间，格式如: 100-250');
+                isDrawingMode = false;
+                toggleDrawingMode(false);
+                return;
+            }
+        }
+
+        // ====== 魔法棒模式 ======
         if (mode === 'magic') {
             const btn = document.getElementById('start-drawing-btn');
             const originalText = btn.innerHTML;
@@ -348,7 +350,8 @@ function initDrawing() {
                         id: ++boxIdCounter,
                         type: type,
                         mode: mode,
-                        polygon: result.polygon
+                        polygon: result.polygon,
+                        timeRange: timeRange
                     });
                     updateAnnotationInfo();
                     redrawCanvas(newCanvas);
@@ -367,7 +370,7 @@ function initDrawing() {
         // ======= 矩形框逻辑 =======
         isDrawing = true;
         currentRect = {
-            id: ++boxIdCounter, x: startX, y: startY, width: 0, height: 0, type: type, mode: mode
+            id: ++boxIdCounter, x: startX, y: startY, width: 0, height: 0, type: type, mode: mode, timeRange: timeRange
         };
     });
 
@@ -412,7 +415,8 @@ function redrawCanvas(canvasElement) {
 }
 
 function drawBox(ctx, box, isDashed = false) {
-    // ====== 处理多边形的绘制 ======
+    const labelTitle = `${getRegionTypeName(box.type)}-${box.id}` + (box.timeRange ? `[${box.timeRange}]` : '');
+
     if (box.mode === 'magic' && box.polygon) {
         ctx.strokeStyle = '#9b59b6';
         ctx.lineWidth = 2;
@@ -430,7 +434,7 @@ function drawBox(ctx, box, isDashed = false) {
         ctx.stroke();
 
         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-        const labelText = `${getRegionTypeName(box.type)}-${box.id}(智能)`;
+        const labelText = `${labelTitle}(智能)`;
         const firstPtX = box.polygon[0][0] * imageScale;
         const firstPtY = box.polygon[0][1] * imageScale;
         const textWidth = ctx.measureText(labelText).width + 10;
@@ -443,7 +447,6 @@ function drawBox(ctx, box, isDashed = false) {
         return;
     }
 
-    // ======= 矩形逻辑 =======
     const isLarge = box.mode === 'large';
     const strokeColor = isLarge ? '#e74c3c' : '#27ae60';
     const fillColor = isLarge ? 'rgba(231, 76, 60, 0.2)' : 'rgba(39, 174, 96, 0.2)';
@@ -459,18 +462,17 @@ function drawBox(ctx, box, isDashed = false) {
 
     if (!isDashed) {
         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-        const labelText = `${getRegionTypeName(box.type)}-${box.id}`;
-        const textWidth = ctx.measureText(labelText).width + 10;
+        const textWidth = ctx.measureText(labelTitle).width + 10;
         ctx.fillRect(box.x, box.y - 20, textWidth, 20);
         ctx.fillStyle = 'white';
         ctx.font = '12px Arial';
         ctx.textBaseline = 'bottom';
-        ctx.fillText(labelText, box.x + 5, box.y - 5);
+        ctx.fillText(labelTitle, box.x + 5, box.y - 5);
     }
 }
 
 function getRegionTypeName(type) {
-    const map = { 'logo': '台标', 'subtitle': '字幕', 'title': '剧名' };
+    const map = { 'logo': '台标', 'subtitle': '字幕', 'title': '剧名', 'other': '其他区域' };
     return map[type] || type;
 }
 
@@ -483,17 +485,20 @@ function updateAnnotationInfo() {
 
     const counts = {};
     maskRects.forEach(box => {
-        if (!counts[box.type]) counts[box.type] = { large: 0, small: 0, magic: 0 };
-        if (box.mode === 'large') counts[box.type].large++;
-        else if (box.mode === 'magic') counts[box.type].magic++;
-        else counts[box.type].small++;
+        const typeKey = box.type === 'other' ? `other_[${box.timeRange}]` : box.type;
+        const displayName = box.type === 'other' ? `其他区[${box.timeRange}]` : getRegionTypeName(box.type);
+
+        if (!counts[typeKey]) counts[typeKey] = { name: displayName, large: 0, small: 0, magic: 0 };
+        if (box.mode === 'large') counts[typeKey].large++;
+        else if (box.mode === 'magic') counts[typeKey].magic++;
+        else counts[typeKey].small++;
     });
 
     let html = '';
-    Object.keys(counts).forEach(type => {
-        const c = counts[type];
+    Object.keys(counts).forEach(key => {
+        const c = counts[key];
         html += `<div class="mb-1">
-            <span class="badge bg-secondary me-1">${getRegionTypeName(type)}</span>
+            <span class="badge bg-secondary me-1">${c.name}</span>
             <span class="text-danger small">大框:${c.large}</span> 
             <span class="text-success small">小框:${c.small}</span>
             ${c.magic > 0 ? `<span class="text-primary small">智能:${c.magic}</span>` : ''}
@@ -520,7 +525,7 @@ function clearAllBoxes() {
     }
 }
 
-// 生成并上传JSON
+// ====== 智能打包 JSON (处理时间范围与自动编号) ======
 async function generateJSON() {
     if (maskRects.length === 0) {
         alert('没有标注数据，请先画框标注');
@@ -534,24 +539,42 @@ async function generateJSON() {
     const jsonData = {
         metadata: {
             timestamp: new Date().toISOString(),
-            videoFilename: currentVideoFilename, // 存文件名
+            videoFilename: currentVideoFilename,
             originalResolution: { width: originalWidth, height: originalHeight }
         },
         regions: {}
     };
 
+    let otherMap = {};
+    let otherCount = 0;
+
     maskRects.forEach(box => {
-        if (!jsonData.regions[box.type]) {
-            jsonData.regions[box.type] = {
-                typeName: getRegionTypeName(box.type),
+        let regionKey = box.type;
+        let typeName = getRegionTypeName(box.type);
+
+        if (box.type === 'other') {
+            if (!otherMap[box.timeRange]) {
+                otherCount++;
+                otherMap[box.timeRange] = `other_${otherCount}`;
+            }
+            regionKey = otherMap[box.timeRange];
+            typeName = `其他区域${otherCount}`;
+        }
+
+        if (!jsonData.regions[regionKey]) {
+            jsonData.regions[regionKey] = {
+                typeName: typeName,
                 largeBoxes: [],
                 smallBoxes: []
             };
+            if (box.type === 'other') {
+                jsonData.regions[regionKey].timeRange = box.timeRange;
+            }
         }
 
         if (box.mode === 'magic') {
             const boxData = { id: box.id, polygon: box.polygon };
-            jsonData.regions[box.type].smallBoxes.push(boxData);
+            jsonData.regions[regionKey].smallBoxes.push(boxData);
         } else {
             const realCoords = displayToImageCoordinates(box.x, box.y);
             const realWidth = Math.round(box.width / imageScale);
@@ -562,9 +585,9 @@ async function generateJSON() {
             };
 
             if (box.mode === 'large') {
-                jsonData.regions[box.type].largeBoxes.push(boxData);
+                jsonData.regions[regionKey].largeBoxes.push(boxData);
             } else {
-                jsonData.regions[box.type].smallBoxes.push(boxData);
+                jsonData.regions[regionKey].smallBoxes.push(boxData);
             }
         }
     });
@@ -581,7 +604,7 @@ async function generateJSON() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 mask_data: jsonData,
-                video_filename: currentVideoFilename // 传文件名给后端
+                video_filename: currentVideoFilename
             })
         });
 
@@ -717,5 +740,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
     regionSelect.addEventListener('change', function() {
         modeSelect.value = 'large';
+        if (this.value === 'other') {
+            document.getElementById('otherTimeContainer').style.display = 'block';
+        } else {
+            document.getElementById('otherTimeContainer').style.display = 'none';
+        }
     });
 });

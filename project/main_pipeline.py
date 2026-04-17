@@ -13,18 +13,12 @@ import threading
 import queue
 from concurrent.futures import ThreadPoolExecutor
 
-# =================================================================
-# 【路径修复】确保脚本能引用上级目录
-# =================================================================
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
 
-# =================================================================
-# 0. 日志记录器 & 依赖
-# =================================================================
 class DualLogger(object):
     def __init__(self, filepath):
         self.terminal = sys.stdout
@@ -52,9 +46,6 @@ except ImportError as e:
     sys.exit(1)
 
 
-# =================================================================
-# 辅助与预处理函数 (提帧、裁切、合并等保持原样)
-# =================================================================
 def report_progress(stage, percent):
     percent = max(0, min(100, int(percent)))
     print(f"PROGRESS:{stage}:{percent}", flush=True)
@@ -71,8 +62,7 @@ def extract_frames_ffmpeg(video_path, output_dir):
     cmd = ['ffmpeg', '-i', video_path, '-start_number', '0', '-vsync', '0', '-q:v', '2',
            os.path.join(output_dir, 'frame_%04d.png')]
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return len(os.listdir(output_dir)) > 0
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); return True
     except:
         return False
 
@@ -85,7 +75,8 @@ def get_recursive_segments(start_idx, end_idx, max_frames=300):
         get_recursive_segments(start_idx + half + (length % 2), end_idx, max_frames)
 
 
-def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
+def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080, time_ranges=None):
+    if time_ranges is None: time_ranges = {}
     boxes = []
     for key, coords_list in all_poses.items():
         if not coords_list: continue
@@ -102,8 +93,11 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
 
         nx1, ny1 = max(0, min(all_x) - padding), max(0, min(all_y) - padding)
         nx2, ny2 = min(img_w, max(all_x) + padding), min(img_h, max(all_y) + padding)
+
+        # 捆绑时间信息，方便合并不丢
+        plan_tr = {key: time_ranges[key]} if key in time_ranges else {}
         boxes.append({"keys": [key], "crop_coords": [int(nx1), int(ny1), int(nx2), int(ny2)],
-                      "original_poses": {key: coords_list}})
+                      "original_poses": {key: coords_list}, "time_ranges": plan_tr})
 
     adjusted, iterations = True, 0
     while adjusted and iterations < 10:
@@ -125,6 +119,9 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080):
                         else:
                             mid = (cy1 + oy2) // 2; cy1 = mid; oy2 = mid
                     boxes[i]["crop_coords"], boxes[j]["crop_coords"] = [cx1, cy1, cx2, cy2], [ox1, oy1, ox2, oy2]
+                    boxes[i]["keys"].extend(boxes[j]["keys"])
+                    boxes[i]["original_poses"].update(boxes[j]["original_poses"])
+                    boxes[i]["time_ranges"].update(boxes[j]["time_ranges"])
                     adjusted = True
 
     for i in range(len(boxes)):
@@ -173,50 +170,37 @@ def render_video(frames_dir, source_video, output_path, fps=25.0):
         return False
 
 
-# =================================================================
-# 核心调度管理器：GPU Worker 类 (AIMD 拥塞控制)
-# =================================================================
 class GPUManager:
     def __init__(self, gpu_id, scale_delay_sec, cooldown_sec, max_absolute_workers=4):
         self.gpu_id = str(gpu_id)
         self.scale_delay_sec = scale_delay_sec
         self.cooldown_sec = cooldown_sec
         self.max_absolute_workers = max_absolute_workers
-
-        self.concurrency_limit = 1  # 初始并发数：1
-        self.active_tasks = 0  # 当前正在处理的任务数
-        self.last_scale_time = time.time()  # 上次调整并发数的时间
-        self.cooldown_until = 0  # 如果爆显存，在此时间前不许提升并发
+        self.concurrency_limit = 1
+        self.active_tasks = 0
+        self.last_scale_time = time.time()
+        self.cooldown_until = 0
 
     def can_accept_task(self):
         return self.active_tasks < self.concurrency_limit
 
     def try_scale_up(self, print_lock):
-        """AIMD: 加性增（如果稳定工作了足够长的时间，尝试增加一个并发）"""
-        current_time = time.time()
-        # 条件：不在冷却期 + 已经达到了当前并发上限 + 稳定运行超过指定时间
-        if current_time > self.cooldown_until and self.active_tasks == self.concurrency_limit:
-            if current_time - self.last_scale_time > self.scale_delay_sec:
+        t = time.time()
+        if t > self.cooldown_until and self.active_tasks == self.concurrency_limit:
+            if t - self.last_scale_time > self.scale_delay_sec:
                 if self.concurrency_limit < self.max_absolute_workers:
                     self.concurrency_limit += 1
-                    self.last_scale_time = current_time
-                    with print_lock:
-                        print(
-                            f"    🚀 [动态扩容] GPU {self.gpu_id} 稳定运行，尝试将并发数提升至: {self.concurrency_limit}")
+                    self.last_scale_time = t
+                    with print_lock: print(f"    🚀 [扩容] GPU {self.gpu_id} 并发上限提升至: {self.concurrency_limit}")
 
     def handle_oom(self, print_lock):
-        """AIMD: 乘性减（发生 OOM，立即回退并发，并进入冷却）"""
-        self.concurrency_limit = max(1, self.active_tasks)  # 缩减到当前存活的安全数量，或者保底 1
+        self.concurrency_limit = max(1, self.active_tasks)
         self.cooldown_until = time.time() + self.cooldown_sec
         self.last_scale_time = time.time()
-        with print_lock:
-            print(
-                f"    ⚠️ [OOM 拦截] GPU {self.gpu_id} 爆显存！已锁定安全并发数为 {self.concurrency_limit}，进入 {self.cooldown_sec // 60} 分钟冷却期。")
+        with print_lock: print(
+            f"    ⚠️ [OOM] GPU {self.gpu_id} 锁定并发数为 {self.concurrency_limit}，冷却 {self.cooldown_sec // 60} 分钟。")
 
 
-# =================================================================
-# 主流程
-# =================================================================
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--video', required=True)
@@ -226,12 +210,10 @@ def main():
     parser.add_argument('--output_video', default='final_output.mp4')
     parser.add_argument('--max_frames', type=int, default=300)
     parser.add_argument('--padding', type=int, default=150)
-
-    # 🌟 新增的高级调度参数
-    parser.add_argument('--gpus', default='0', help='使用的显卡列表，逗号分隔，如: 0,1,2,3')
-    parser.add_argument('--scale_delay', type=int, default=3, help='稳定运行多久后尝试新增并发(分钟)')
-    parser.add_argument('--cooldown', type=int, default=10, help='OOM爆显存后的冷却时间(分钟)')
-    parser.add_argument('--max_workers_per_gpu', type=int, default=4, help='单张显卡绝对并发上限')
+    parser.add_argument('--gpus', default='0')
+    parser.add_argument('--scale_delay', type=int, default=3)
+    parser.add_argument('--cooldown', type=int, default=10)
+    parser.add_argument('--max_workers_per_gpu', type=int, default=4)
     args = parser.parse_args()
 
     if not os.path.isabs(args.model_path): args.model_path = os.path.join(current_dir, args.model_path)
@@ -244,27 +226,21 @@ def main():
     sys.stderr = sys.stdout
 
     gpu_list = [g.strip() for g in args.gpus.split(',')]
-    print(f"\n[Main] ====== 高级 AIMD 分布式推理启动 ======")
-    print(f"[Main] 目标视频: {video_name}")
-    print(f"[Main] 挂载显卡: GPU {gpu_list}")
-    print(f"[Main] 调度策略: 稳定 {args.scale_delay} 分钟后扩容，OOM 冷却 {args.cooldown} 分钟")
+    print(f"\n[Main] ====== 高级 AIMD 时效水印调度启动 ======")
 
-    # Step 1: 提取帧
     frames_dir = os.path.join(args.workspace, "full_frames_original")
     extract_frames_ffmpeg(args.video, frames_dir)
     frame_files = sorted([f for f in os.listdir(frames_dir) if f.endswith('.png')])
     fps = 25.0
     img_h, img_w = cv2.imread(os.path.join(frames_dir, frame_files[0])).shape[:2]
 
-    # Step 2: 准备全局任务池
-    all_poses = load_poses_from_json(args.mask_json)
+    all_poses, time_ranges = load_poses_from_json(args.mask_json)
     if not all_poses: sys.exit(1)
-    work_plans = resolve_overlaps(all_poses, padding=args.padding, img_w=img_w, img_h=img_h)
+    work_plans = resolve_overlaps(all_poses, padding=args.padding, img_w=img_w, img_h=img_h, time_ranges=time_ranges)
 
     global_task_queue = queue.Queue()
     all_merge_tasks = []
 
-    # 将所有的区域、场景，扁平化拆解为原子任务放入队列
     print("\n[Step 2] 正在进行全量场景切分与预处理...")
     for plan in work_plans:
         region_id = "_".join(plan['keys'])
@@ -283,8 +259,9 @@ def main():
         scene_indices = sorted(list(set(scene_indices)))
 
         mask_output_dir = os.path.join(region_dir, "masks")
+        # 传入 time_ranges 生成精准 Mask
         generate_local_masks(crop_frames_dir, mask_output_dir, plan['original_poses'], plan['crop_coords'],
-                             static_keys=['1', '3', '4'])
+                             time_ranges=plan['time_ranges'])
 
         results_dir = os.path.join(region_dir, "results")
         for i in range(len(scene_indices) - 1):
@@ -292,44 +269,53 @@ def main():
                 seg_name = f"seg_{seg_start:06d}_{seg_end:06d}"
                 seg_out_dir = os.path.join(results_dir, seg_name)
 
-                # 准备临时软链接
                 in_dir = os.path.join(region_dir, "temp_inputs", seg_name)
                 mk_dir = os.path.join(region_dir, "temp_masks", seg_name)
                 setup_dirs(in_dir);
                 setup_dirs(mk_dir)
 
                 valid = 0
+                has_white_mask = False  # 👈 核心检测位
+
                 for f_idx in range(seg_start, seg_end):
                     if f_idx >= len(frame_files): break
                     f_name = frame_files[f_idx]
                     os.symlink(os.path.abspath(os.path.join(crop_frames_dir, f_name)), os.path.join(in_dir, f_name))
                     src_m = os.path.abspath(os.path.join(mask_output_dir, f_name))
                     src_s = os.path.abspath(os.path.join(mask_output_dir, "static_mask.png"))
+
                     if os.path.exists(src_m):
                         os.symlink(src_m, os.path.join(mk_dir, f_name))
                     elif os.path.exists(src_s):
                         os.symlink(src_s, os.path.join(mk_dir, f_name))
+
+                    # 检查此切片中是否有需要处理的非全黑遮罩
+                    if not has_white_mask:
+                        check_path = src_m if os.path.exists(src_m) else (src_s if os.path.exists(src_s) else None)
+                        if check_path:
+                            img_chk = cv2.imread(check_path, cv2.IMREAD_GRAYSCALE)
+                            if img_chk is not None and cv2.countNonZero(img_chk) > 0:
+                                has_white_mask = True
                     valid += 1
 
                 if valid > 0:
-                    global_task_queue.put({
-                        'region': region_id,
-                        'seg_name': seg_name,
-                        'in_dir': in_dir, 'mk_dir': mk_dir, 'out_dir': seg_out_dir
-                    })
+                    # ✅ 如果在这个短视频切片中，由于时间限制所有的帧 Mask 全黑，则直接跳过 GPU 处理！
+                    if has_white_mask:
+                        global_task_queue.put(
+                            {'region': region_id, 'seg_name': seg_name, 'in_dir': in_dir, 'mk_dir': mk_dir,
+                             'out_dir': seg_out_dir})
+                    else:
+                        print(f"    ℹ [{region_id} | {seg_name}] 无生效遮罩(全黑)，已自动跳过深度推理以节省算力。")
+
+                    # 但无论如何必须保留合并队列，以保证视频最后渲染帧率不断
                     all_merge_tasks.append(
                         {'result_dir': seg_out_dir, 'coords': plan['crop_coords'], 'start_frame': seg_start,
                          'end_frame': seg_end})
 
     total_tasks = global_task_queue.qsize()
-    print(f"[Main] 预处理完成！总计产生 {total_tasks} 个独立推理短任务进入全局队列。")
+    print(f"[Main] 预处理完成！过滤后总计 {total_tasks} 个有效片段进入 GPU 队列。")
 
-    # =======================================================================
-    # 【Step 3：AIMD 分布式推理调度中心】
-    # =======================================================================
     print("\n[Step 3] 启动多 GPU AIMD 调度引擎...")
-
-    # 初始化每个 GPU 的管理器
     gpu_managers = [GPUManager(g, args.scale_delay * 60, args.cooldown * 60, args.max_workers_per_gpu) for g in
                     gpu_list]
     active_threads = []
@@ -337,7 +323,6 @@ def main():
     completed_tasks = 0
 
     def inference_worker(task, gpu_manager, result_dict):
-        # 组装命令，加入 30帧 防爆显存限制
         cmd = [
             sys.executable, args.model_path,
             "--video", task['in_dir'], "--mask", task['mk_dir'], "--output", task['out_dir'],
@@ -346,7 +331,7 @@ def main():
         ]
 
         env = os.environ.copy()
-        env['CUDA_VISIBLE_DEVICES'] = gpu_manager.gpu_id  # 绑定 GPU
+        env['CUDA_VISIBLE_DEVICES'] = gpu_manager.gpu_id
         tag = f"[GPU {gpu_manager.gpu_id} | {task['region']} | {task['seg_name']}]"
 
         with print_lock:
@@ -384,16 +369,12 @@ def main():
                 print(f"    异常 {tag} -> {e}")
             result_dict['status'] = 'error'
 
-    # 调度主循环
     while not global_task_queue.empty() or active_threads:
-        # 1. 尝试给每个 GPU 派发任务、动态扩容
         for gm in gpu_managers:
-            gm.try_scale_up(print_lock)  # 检测是否能加性增
-
+            gm.try_scale_up(print_lock)
             while gm.can_accept_task() and not global_task_queue.empty():
                 task = global_task_queue.get()
                 gm.active_tasks += 1
-
                 res = {}
                 t = threading.Thread(target=inference_worker, args=(task, gm, res))
                 t.task = task;
@@ -402,7 +383,6 @@ def main():
                 t.start()
                 active_threads.append(t)
 
-        # 2. 检查完成状态，处理 OOM
         done = [t for t in active_threads if not t.is_alive()]
         for t in done:
             active_threads.remove(t)
@@ -410,18 +390,18 @@ def main():
             status = t.res.get('status', 'error')
 
             if status == 'oom':
-                t.gm.handle_oom(print_lock)  # 乘性减与冷却
-                global_task_queue.put(t.task)  # 回退队列
+                t.gm.handle_oom(print_lock)
+                global_task_queue.put(t.task)
             else:
                 completed_tasks += 1
-                report_progress("processing", 15 + (completed_tasks / total_tasks) * 75)
+                if total_tasks > 0:
+                    report_progress("processing", 15 + (completed_tasks / total_tasks) * 75)
                 try:
                     shutil.rmtree(t.task['in_dir']); shutil.rmtree(t.task['mk_dir'])
                 except:
                     pass
         time.sleep(0.5)
 
-    # Step 6: 回贴与渲染 (合并保持原样)
     print("\n[Step 6] 图片合并...")
     report_progress("merging", 90)
     final_dir = os.path.join(args.workspace, "full_frames_final")
