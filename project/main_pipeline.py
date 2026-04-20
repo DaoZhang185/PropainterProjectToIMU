@@ -15,8 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
-if root_dir not in sys.path:
-    sys.path.insert(0, root_dir)
+if root_dir not in sys.path: sys.path.insert(0, root_dir)
 
 
 class DualLogger(object):
@@ -94,7 +93,6 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080, time_ranges
         nx1, ny1 = max(0, min(all_x) - padding), max(0, min(all_y) - padding)
         nx2, ny2 = min(img_w, max(all_x) + padding), min(img_h, max(all_y) + padding)
 
-        # 捆绑时间信息，方便合并不丢
         plan_tr = {key: time_ranges[key]} if key in time_ranges else {}
         boxes.append({"keys": [key], "crop_coords": [int(nx1), int(ny1), int(nx2), int(ny2)],
                       "original_poses": {key: coords_list}, "time_ranges": plan_tr})
@@ -231,7 +229,18 @@ def main():
     frames_dir = os.path.join(args.workspace, "full_frames_original")
     extract_frames_ffmpeg(args.video, frames_dir)
     frame_files = sorted([f for f in os.listdir(frames_dir) if f.endswith('.png')])
-    fps = 25.0
+
+    # 【核心获取视频真实的 FPS】
+    try:
+        cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate', '-of',
+               'default=noprint_wrappers=1:nokey=1', args.video]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        vals = res.stdout.strip().split('/')
+        fps = float(vals[0]) / float(vals[1]) if len(vals) == 2 else float(vals[0])
+    except:
+        fps = 25.0
+    print(f"[Main] 视频原始帧率检测为: {fps:.2f} FPS")
+
     img_h, img_w = cv2.imread(os.path.join(frames_dir, frame_files[0])).shape[:2]
 
     all_poses, time_ranges = load_poses_from_json(args.mask_json)
@@ -259,9 +268,10 @@ def main():
         scene_indices = sorted(list(set(scene_indices)))
 
         mask_output_dir = os.path.join(region_dir, "masks")
-        # 传入 time_ranges 生成精准 Mask
+
+        # 【关键参数传递】将真实的 FPS 传给打工小弟，以便时间 -> 帧数的绝对换算！
         generate_local_masks(crop_frames_dir, mask_output_dir, plan['original_poses'], plan['crop_coords'],
-                             time_ranges=plan['time_ranges'])
+                             time_ranges=plan['time_ranges'], fps=fps)
 
         results_dir = os.path.join(region_dir, "results")
         for i in range(len(scene_indices) - 1):
@@ -275,7 +285,7 @@ def main():
                 setup_dirs(mk_dir)
 
                 valid = 0
-                has_white_mask = False  # 👈 核心检测位
+                has_white_mask = False
 
                 for f_idx in range(seg_start, seg_end):
                     if f_idx >= len(frame_files): break
@@ -289,7 +299,6 @@ def main():
                     elif os.path.exists(src_s):
                         os.symlink(src_s, os.path.join(mk_dir, f_name))
 
-                    # 检查此切片中是否有需要处理的非全黑遮罩
                     if not has_white_mask:
                         check_path = src_m if os.path.exists(src_m) else (src_s if os.path.exists(src_s) else None)
                         if check_path:
@@ -299,21 +308,20 @@ def main():
                     valid += 1
 
                 if valid > 0:
-                    # ✅ 如果在这个短视频切片中，由于时间限制所有的帧 Mask 全黑，则直接跳过 GPU 处理！
                     if has_white_mask:
                         global_task_queue.put(
                             {'region': region_id, 'seg_name': seg_name, 'in_dir': in_dir, 'mk_dir': mk_dir,
                              'out_dir': seg_out_dir})
                     else:
-                        print(f"    ℹ [{region_id} | {seg_name}] 无生效遮罩(全黑)，已自动跳过深度推理以节省算力。")
+                        print(
+                            f"    ℹ [{region_id} | {seg_name}] 智能判定该片段为无水印实效区(全黑掩码)，直接跳过显卡推理！")
 
-                    # 但无论如何必须保留合并队列，以保证视频最后渲染帧率不断
                     all_merge_tasks.append(
                         {'result_dir': seg_out_dir, 'coords': plan['crop_coords'], 'start_frame': seg_start,
                          'end_frame': seg_end})
 
     total_tasks = global_task_queue.qsize()
-    print(f"[Main] 预处理完成！过滤后总计 {total_tasks} 个有效片段进入 GPU 队列。")
+    print(f"[Main] 预处理完成！算力豁免后总计 {total_tasks} 个待处理片段进入 GPU 队列。")
 
     print("\n[Step 3] 启动多 GPU AIMD 调度引擎...")
     gpu_managers = [GPUManager(g, args.scale_delay * 60, args.cooldown * 60, args.max_workers_per_gpu) for g in

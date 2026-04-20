@@ -1,9 +1,6 @@
 import sys
 import os
 
-# =================================================================
-# 【路径修复】确保脚本能引用上级目录（根目录）的模块
-# =================================================================
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 if root_dir not in sys.path:
@@ -11,11 +8,18 @@ if root_dir not in sys.path:
 
 import json
 
+def parse_time_str(t_str):
+    """
+    将时分秒字符串 (如 '0:3:23' 或 '00:03:23') 转换为总秒数 (float)。
+    """
+    parts = t_str.split(':')
+    if len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    elif len(parts) == 2:
+        return int(parts[0]) * 60 + float(parts[1])
+    return float(parts[0])
+
 def load_poses_from_json(json_path):
-    """
-    解析 JSON，返回坐标信息与时效范围映射字典
-    返回格式: poses, time_ranges
-    """
     if not json_path or not os.path.exists(json_path):
         print(f"✗ 错误: Mask JSON文件未找到: {json_path}")
         return None, {}
@@ -25,7 +29,7 @@ def load_poses_from_json(json_path):
             data = json.load(f)
 
         poses = {}
-        time_ranges = {}  # 存放有时效性的区域
+        time_ranges = {}
 
         type_mapping = {
             '台标': '1', 'logo': '1',
@@ -45,7 +49,7 @@ def load_poses_from_json(json_path):
             elif region_key in type_mapping:
                 pose_key = type_mapping[region_key]
             elif '其他' in type_name or 'other' in region_key:
-                pose_key = region_key  # 动态 key，如 other_1, other_2
+                pose_key = region_key
 
             if pose_key:
                 large_list = []
@@ -66,15 +70,17 @@ def load_poses_from_json(json_path):
                 process_boxes(region_data.get('largeBoxes', []), 'largeBox', large_list)
                 process_boxes(region_data.get('smallBoxes', []), 'smallBox', small_list)
 
-                # ====== 提取生效时间 ======
+                # ====== 【核心优化】完美解析人类直观时间格式 ======
                 tr = str(region_data.get('timeRange', '')).strip()
                 if tr and '-' in tr:
                     try:
-                        sf, ef = map(int, tr.replace(' ', '').split('-'))
-                        time_ranges[pose_key] = [sf, ef]
-                        print(f"  ⏱ 识别到时效限制 -> {type_name}: 帧 {sf} 至 {ef}")
-                    except Exception:
-                        pass
+                        start_str, end_str = tr.split('-')
+                        start_sec = parse_time_str(start_str.strip())
+                        end_sec = parse_time_str(end_str.strip())
+                        time_ranges[pose_key] = [start_sec, end_sec]
+                        print(f"  ⏱ 识别到时效限制 -> {type_name}: 第 {start_sec}秒 至 第 {end_sec}秒")
+                    except Exception as e:
+                        print(f"  ⚠ 时间解析失败: {e}，将默认全时段生效")
 
                 # 防涂白机制：除了字幕，其他全用精准区域
                 if pose_key in ['1', '3'] or 'other' in pose_key:
