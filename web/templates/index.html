@@ -86,7 +86,6 @@
             font-size: 9px;
         }
 
-        /* Mask制作区域样式 */
         .mask-container {
             position: relative;
             flex: 1;
@@ -130,16 +129,14 @@
             display: block;
         }
 
-        /* 布局结构 */
         .main-content {
             display: flex;
             flex: 1;
             overflow: hidden;
         }
 
-        /* 左侧控制栏 */
         .controls-column {
-            width: 280px;
+            width: 290px;
             padding: 15px;
             background: #f8f9fa;
             border-right: 1px solid #dee2e6;
@@ -163,15 +160,36 @@
             overflow: hidden;
         }
 
+        /* =========================================
+           新增：高级分离式时间输入框 CSS
+           ========================================= */
         .time-input-group {
             display: flex;
-            gap: 5px;
+            gap: 4px;
             margin-bottom: 10px;
         }
 
-        .time-input-group input {
+        .time-input-wrapper {
+            position: relative;
             flex: 1;
+        }
+
+        .time-input-wrapper input {
+            padding-right: 22px; /* 给背景字留出空间 */
             text-align: center;
+            /* 隐藏默认的占位符 */
+        }
+
+        .time-input-unit {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #adb5bd;
+            pointer-events: none; /* 核心：事件穿透，绝不影响点击和输入 */
+            font-size: 12px;
+            user-select: none; /* 核心：禁止文字选中 */
+            font-weight: 500;
         }
 
         .time-separator {
@@ -179,7 +197,9 @@
             align-items: center;
             justify-content: center;
             font-weight: bold;
+            color: #555;
         }
+        /* ========================================= */
 
         .progress-text {
             font-size: 11px;
@@ -260,13 +280,22 @@
                 <div class="section-title">Mask 制作面板</div>
 
                 <div class="mb-2">
-                    <label class="form-label">提取时间点 (时:分:秒)</label>
+                    <label class="form-label">提取时间点</label>
                     <div class="time-input-group">
-                        <input type="number" class="form-control" id="hours" placeholder="00" min="0" value="0">
+                        <div class="time-input-wrapper">
+                            <input type="number" class="form-control" id="hours" min="0" value="0">
+                            <span class="time-input-unit">时</span>
+                        </div>
                         <div class="time-separator">:</div>
-                        <input type="number" class="form-control" id="minutes" placeholder="00" min="0" max="59" value="0">
+                        <div class="time-input-wrapper">
+                            <input type="number" class="form-control" id="minutes" min="0" max="59" value="0">
+                            <span class="time-input-unit">分</span>
+                        </div>
                         <div class="time-separator">:</div>
-                        <input type="number" class="form-control" id="seconds" placeholder="00" min="0" max="59" value="0">
+                        <div class="time-input-wrapper">
+                            <input type="number" class="form-control" id="seconds" min="0" max="59" value="0">
+                            <span class="time-input-unit">秒</span>
+                        </div>
                     </div>
                     <button class="btn btn-outline-primary" id="extract-frame-btn">
                         <i class="fas fa-camera me-1"></i>提取当前帧
@@ -372,7 +401,33 @@
     </div>
 
     <div class="modal fade" id="helpModal" tabindex="-1" aria-labelledby="helpModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="helpModalLabel">系统操作说明</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <h6>1. 准备工作</h6>
+                    <p>上传视频文件</p>
+
+                    <h6>2. 制作 Mask</h6>
+                    <ol>
+                        <li>输入需要处理的视频时间点（时:分:秒）</li>
+                        <li>点击<strong>提取当前帧</strong></li>
+                        <li>画框标注区域：请先用区域框确定视频中需要处理的范围，再用目标框选中该范围内您想要移除的具体内容</li>
+                        <li>点击<strong>上传 Mask 至服务器</strong>。</li>
+                    </ol>
+
+                    <h6>3. 视频处理</h6>
+                    <p>确认 Mask 上传成功后，点击<strong>开始处理</strong>。系统将读取服务器上的 Mask 文件进行处理</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary btn-sm" data-bs-dismiss="modal">我知道了</button>
+                </div>
+            </div>
         </div>
+    </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/js/bootstrap.bundle.min.js"></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>

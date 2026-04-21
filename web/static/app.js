@@ -8,7 +8,7 @@ let startX, startY;
 let currentRect = null;
 let maskRects = [];
 let boxIdCounter = 0;
-let otherRegionCounter = 0; // 【新增】用来追踪产生了几组"其他区域"
+let otherRegionCounter = 0; // 用来追踪产生了几组"其他区域"
 
 let currentVideoFilename = '';
 let uploadedMaskFilename = null;
@@ -211,17 +211,68 @@ function toggleDrawingMode(forceState) {
     }
 }
 
-// 【新增】动态创建属于某一个“其他区域”的时间输入框
+// 动态创建极具交互感的三联时间输入框
 function addOtherTimeInput(groupId) {
     const container = document.getElementById('dynamicTimeContainers');
     const div = document.createElement('div');
     div.className = 'mt-2 p-2 bg-light border rounded';
     div.id = `time_container_${groupId}`;
+
+    // oninput 绑定重绘，实现输入框更改，画布文本自动刷新！
     div.innerHTML = `
-        <span class="small text-dark fw-bold mb-1 d-block">其他区域${groupId} 生效时间</span>
-        <input type="text" class="form-control form-control-sm" id="time_input_${groupId}" placeholder="如: 0:3:23-0:4:23">
+        <div class="d-flex justify-content-between align-items-center mb-1">
+            <span class="small text-dark fw-bold">其他区域${groupId} 生效时间</span>
+        </div>
+        <div class="mb-1"><span class="small text-muted" style="font-size:11px;">起:</span></div>
+        <div class="time-input-group mb-1">
+            <div class="time-input-wrapper">
+                <input type="number" class="form-control form-control-sm" id="start_h_${groupId}" min="0" value="0" oninput="redrawCanvas(); updateAnnotationInfo();">
+                <span class="time-input-unit">时</span>
+            </div>
+            <div class="time-separator">:</div>
+            <div class="time-input-wrapper">
+                <input type="number" class="form-control form-control-sm" id="start_m_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas(); updateAnnotationInfo();">
+                <span class="time-input-unit">分</span>
+            </div>
+            <div class="time-separator">:</div>
+            <div class="time-input-wrapper">
+                <input type="number" class="form-control form-control-sm" id="start_s_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas(); updateAnnotationInfo();">
+                <span class="time-input-unit">秒</span>
+            </div>
+        </div>
+        <div class="mb-1 mt-2"><span class="small text-muted" style="font-size:11px;">止:</span></div>
+        <div class="time-input-group mb-1">
+            <div class="time-input-wrapper">
+                <input type="number" class="form-control form-control-sm" id="end_h_${groupId}" min="0" value="0" oninput="redrawCanvas(); updateAnnotationInfo();">
+                <span class="time-input-unit">时</span>
+            </div>
+            <div class="time-separator">:</div>
+            <div class="time-input-wrapper">
+                <input type="number" class="form-control form-control-sm" id="end_m_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas(); updateAnnotationInfo();">
+                <span class="time-input-unit">分</span>
+            </div>
+            <div class="time-separator">:</div>
+            <div class="time-input-wrapper">
+                <input type="number" class="form-control form-control-sm" id="end_s_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas(); updateAnnotationInfo();">
+                <span class="time-input-unit">秒</span>
+            </div>
+        </div>
     `;
     container.appendChild(div);
+}
+
+// 读取页面上的 DOM 时间以供画布或上传使用
+function getTimeRangeStr(otherId) {
+    const sh = document.getElementById(`start_h_${otherId}`);
+    const sm = document.getElementById(`start_m_${otherId}`);
+    const ss = document.getElementById(`start_s_${otherId}`);
+    const eh = document.getElementById(`end_h_${otherId}`);
+    const em = document.getElementById(`end_m_${otherId}`);
+    const es = document.getElementById(`end_s_${otherId}`);
+    if (sh && sm && ss && eh && em && es) {
+        return `${sh.value}:${sm.value}:${ss.value}-${eh.value}:${em.value}:${es.value}`;
+    }
+    return "";
 }
 
 function initDrawing() {
@@ -240,10 +291,10 @@ function initDrawing() {
         const type = document.getElementById('regionType').value;
         const mode = document.getElementById('drawMode').value;
 
-        // 【逻辑升级】拦截非大框的孤立操作
+        // 如果是"其他区域"，且当前试图点魔法棒或小框，必须先有大框做容器才能产生 UI 面板
         if (type === 'other') {
             if (mode !== 'large' && otherRegionCounter === 0) {
-                alert('请先使用【区域框】(大红框) 圈定该"其他区域"的大致范围，系统将自动生成对应的时间设置项！');
+                alert('请先使用【区域框】(红色整体) 圈定该"其他区域"的大致范围，系统将为您自动生成对应的时间设置项！');
                 isDrawingMode = false;
                 toggleDrawingMode(false);
                 return;
@@ -275,7 +326,7 @@ function initDrawing() {
                         type: type,
                         mode: mode,
                         polygon: result.polygon,
-                        otherId: type === 'other' ? otherRegionCounter : null // 归属给最近的 otherId
+                        otherId: type === 'other' ? otherRegionCounter : null // 魔法棒自动认领最新的红框父亲
                     });
                     updateAnnotationInfo();
                     redrawCanvas(newCanvas);
@@ -309,7 +360,6 @@ function initDrawing() {
         if (currentRect.height < 0) { currentRect.y += currentRect.height; currentRect.height = Math.abs(currentRect.height); }
 
         if (Math.abs(currentRect.width) > 0 && Math.abs(currentRect.height) > 0) {
-            // 【重点】如果此时画的是“其他区域”的红框(大框)，自动编号并追加UI面板
             if (currentRect.type === 'other') {
                 if (currentRect.mode === 'large') {
                     otherRegionCounter++;
@@ -337,9 +387,19 @@ function redrawCanvas(canvasElement) {
 }
 
 function drawBox(ctx, box, isDashed = false) {
-    const isOther = (box.type === 'other');
-    const labelTitle = isOther ? `其他区域${box.otherId}-${box.id}` : `${getRegionTypeName(box.type)}-${box.id}`;
+    // 动态拉取当前 UI 上填写的最新时间
+    let timeStr = "";
+    if (box.type === 'other' && box.otherId) {
+        timeStr = getTimeRangeStr(box.otherId);
+    }
 
+    // 【完美体验】只在大红框展示时间和编号
+    const isLarge = box.mode === 'large';
+    const labelTitle = (box.type === 'other')
+        ? `其他区域${box.otherId} [${timeStr.replace('-', ' 至 ')}]`
+        : `${getRegionTypeName(box.type)}-${box.id}`;
+
+    // 魔法棒多边形：纯粹的半透明紫，【坚决不画任何文字】防止画面被遮挡
     if (box.mode === 'magic' && box.polygon) {
         ctx.strokeStyle = '#9b59b6';
         ctx.lineWidth = 2;
@@ -351,11 +411,9 @@ function drawBox(ctx, box, isDashed = false) {
             if (index === 0) ctx.moveTo(dispX, dispY); else ctx.lineTo(dispX, dispY);
         });
         ctx.closePath(); ctx.fill(); ctx.stroke();
-        // 【完成要求 3】魔法棒的线条只画轮廓，不显示任何文字遮挡画面！
         return;
     }
 
-    const isLarge = box.mode === 'large';
     const strokeColor = isLarge ? '#e74c3c' : '#27ae60';
     const fillColor = isLarge ? 'rgba(231, 76, 60, 0.2)' : 'rgba(39, 174, 96, 0.2)';
 
@@ -366,13 +424,13 @@ function drawBox(ctx, box, isDashed = false) {
     ctx.fillRect(box.x, box.y, box.width, box.height);
     ctx.strokeRect(box.x, box.y, box.width, box.height);
 
-    if (!isDashed) {
-        // 【完成要求 3】采用高级半透明的底色和文字，不遮挡画面且能看清编号
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'; // 半透明磨砂黑底
+    // 只有红色大区域框才显示半透明的高级文字标签
+    if (!isDashed && isLarge) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'; // 柔和的半透明磨砂黑底
         const textWidth = ctx.measureText(labelTitle).width + 10;
         ctx.fillRect(box.x, box.y - 20, textWidth, 20);
 
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'; // 柔和的半透明白字
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.95)'; // 高清晰白字
         ctx.font = '12px Arial';
         ctx.textBaseline = 'bottom';
         ctx.fillText(labelTitle, box.x + 5, box.y - 5);
@@ -390,8 +448,14 @@ function updateAnnotationInfo() {
 
     const counts = {};
     maskRects.forEach(box => {
-        const typeKey = box.type === 'other' ? `other_${box.otherId}` : box.type;
-        const displayName = box.type === 'other' ? `其他区域${box.otherId}` : getRegionTypeName(box.type);
+        let typeKey = box.type;
+        let displayName = getRegionTypeName(box.type);
+
+        if (box.type === 'other') {
+            typeKey = `other_${box.otherId}`;
+            const timeStr = getTimeRangeStr(box.otherId);
+            displayName = `其他区域${box.otherId} [${timeStr.replace('-', ' 至 ')}]`;
+        }
 
         if (!counts[typeKey]) counts[typeKey] = { name: displayName, large: 0, small: 0, magic: 0 };
         if (box.mode === 'large') counts[typeKey].large++;
@@ -415,11 +479,11 @@ function updateAnnotationInfo() {
 function undoLastBox() {
     if (maskRects.length > 0) {
         const removed = maskRects.pop();
-        // 如果撤销的是一个“其他区域”的红框，将其对应的时间UI输入框也拔除！
+        // 撤销连坐机制：如果撤销了红框，连带撤销左侧生成的UI时间面板
         if (removed.type === 'other' && removed.mode === 'large') {
             const container = document.getElementById(`time_container_${removed.otherId}`);
             if (container) container.remove();
-            if (removed.otherId === otherRegionCounter) otherRegionCounter--; // 编号回退
+            if (removed.otherId === otherRegionCounter) otherRegionCounter--;
         }
         redrawCanvas();
         updateAnnotationInfo();
@@ -431,13 +495,13 @@ function clearAllBoxes() {
     if (confirm('确定要清空所有标注框吗？')) {
         maskRects = [];
         otherRegionCounter = 0;
-        document.getElementById('dynamicTimeContainers').innerHTML = ''; // 清空所有动态生成的时间框
+        document.getElementById('dynamicTimeContainers').innerHTML = '';
         redrawCanvas();
         updateAnnotationInfo();
     }
 }
 
-// ====== 智能打包 JSON (收集散落的动态时间) ======
+// ====== JSON 生成（自动归拢时间） ======
 async function generateJSON() {
     if (maskRects.length === 0) { alert('没有标注数据，请先画框标注'); return; }
 
@@ -451,9 +515,6 @@ async function generateJSON() {
         regions: {}
     };
 
-    // 初步校验时间格式 (保证必须填，必须带横线)
-    let hasTimeError = false;
-
     maskRects.forEach(box => {
         let regionKey = box.type;
         let typeName = getRegionTypeName(box.type);
@@ -462,13 +523,7 @@ async function generateJSON() {
         if (box.type === 'other') {
             regionKey = `other_${box.otherId}`;
             typeName = `其他区域${box.otherId}`;
-            const timeInput = document.getElementById(`time_input_${box.otherId}`);
-            if (timeInput) {
-                timeRange = timeInput.value.trim();
-                if (!timeRange || !timeRange.includes('-')) {
-                    hasTimeError = true;
-                }
-            }
+            timeRange = getTimeRangeStr(box.otherId); // 取出 "0:3:23-0:4:23" 给后端解析
         }
 
         if (!jsonData.regions[regionKey]) {
@@ -485,11 +540,6 @@ async function generateJSON() {
             else jsonData.regions[regionKey].smallBoxes.push(boxData);
         }
     });
-
-    if (hasTimeError) {
-        alert('请确保所有"其他区域"的生效时间都已正确填写！格式例如: 0:3:23-0:4:23');
-        return;
-    }
 
     const btn = document.getElementById('generate-json-btn');
     const originalBtnText = btn.innerHTML;
