@@ -8,7 +8,9 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         :root {
-            --primary: #3498db;
+            /* 采用类似奥云AI的现代科技蓝紫渐变主色调 */
+            --primary: #505efa;
+            --primary-dark: #303cdb;
             --success: #27ae60;
             --warning: #f39c12;
             --danger: #e74c3c;
@@ -17,33 +19,41 @@
         }
 
         body {
-            background: #f8f9fa;
+            /* 全局渐变背景 */
+            background: linear-gradient(135deg, #505efa 0%, #303cdb 100%);
             min-height: 100vh;
             font-family: 'Microsoft YaHei', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            padding: 10px;
+            padding: 15px;
             margin: 0;
             overflow: hidden;
         }
 
         .main-container {
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 3px 10px rgba(0,0,0,0.05);
+            background: #ffffff;
+            border-radius: 16px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.2);
             overflow: hidden;
-            height: calc(100vh - 20px);
+            height: calc(100vh - 30px);
             display: flex;
             flex-direction: column;
         }
 
+        .navbar {
+            background: #ffffff !important;
+            border-bottom: 1px solid #f0f0f0;
+            padding: 12px 20px;
+        }
+
         .navbar-brand {
-            font-weight: 600;
-            color: var(--dark);
-            font-size: 18px;
+            font-weight: 800;
+            color: var(--primary-dark) !important;
+            font-size: 20px;
+            letter-spacing: 1px;
         }
 
         .btn {
-            border-radius: 4px;
-            font-weight: 500;
+            border-radius: 6px;
+            font-weight: 600;
             padding: 8px 12px;
             font-size: 13px;
             transition: all 0.3s ease;
@@ -51,7 +61,11 @@
             width: 100%;
         }
 
-        .btn-primary { background: var(--primary); border-color: var(--primary); }
+        .btn-primary { background: linear-gradient(90deg, var(--primary), var(--primary-dark)); border: none; }
+        .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 10px rgba(80, 94, 250, 0.3); }
+        .btn-outline-primary { color: var(--primary); border-color: var(--primary); }
+        .btn-outline-primary:hover { background: var(--primary); color: white; }
+
         .btn-success { background: var(--success); border-color: var(--success); }
         .btn-warning { background: var(--warning); border-color: var(--warning); color: white; }
         .btn-danger { background: var(--danger); border-color: var(--danger); }
@@ -59,39 +73,46 @@
 
         .form-control, .form-select {
             font-size: 13px;
-            padding: 6px 8px;
+            padding: 6px 10px;
             height: auto;
             margin-bottom: 8px;
+            border-radius: 6px;
+            border: 1px solid #dfe4ea;
+        }
+
+        .form-control:focus, .form-select:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 0.2rem rgba(80, 94, 250, 0.15);
         }
 
         .form-label {
             font-size: 13px;
-            font-weight: 600;
-            margin-bottom: 4px;
-            color: #555;
+            font-weight: 700;
+            margin-bottom: 6px;
+            color: #34495e;
         }
 
         .progress {
-            height: 12px;
-            border-radius: 6px;
-            background: var(--light);
+            height: 14px;
+            border-radius: 7px;
+            background: #edf2f7;
             margin-bottom: 8px;
         }
 
         .progress-bar {
-            background: linear-gradient(45deg, var(--primary), #2980b9);
-            border-radius: 6px;
-            transition: width 0.5s ease;
-            font-weight: 500;
-            font-size: 9px;
+            background: linear-gradient(45deg, var(--primary), #7582f5);
+            border-radius: 7px;
+            transition: width 0.4s ease;
+            font-weight: 600;
+            font-size: 10px;
         }
 
         .mask-container {
             position: relative;
             flex: 1;
-            background: #f8f9fa;
-            border: 2px dashed #dee2e6;
-            border-radius: 6px;
+            background: #f4f7fe;
+            border: 2px dashed #dcdde1;
+            border-radius: 12px;
             overflow: hidden;
             display: flex;
             align-items: center;
@@ -101,9 +122,9 @@
 
         .placeholder-text {
             text-align: center;
-            color: #6c757d;
+            color: #7f8fa6;
             z-index: 1;
-            font-size: 14px;
+            font-size: 15px;
         }
 
         .mask-image {
@@ -136,60 +157,66 @@
         }
 
         .controls-column {
-            width: 290px;
-            padding: 15px;
-            background: #f8f9fa;
-            border-right: 1px solid #dee2e6;
+            width: 300px;
+            padding: 20px;
+            background: #ffffff;
+            border-right: 1px solid #f0f0f0;
             display: flex;
             flex-direction: column;
             overflow-y: auto;
-            max-height: calc(100vh - 70px);
+            max-height: calc(100vh - 85px);
             flex-shrink: 0;
         }
 
         .controls-column::-webkit-scrollbar { width: 6px; }
-        .controls-column::-webkit-scrollbar-track { background: #f1f1f1; }
-        .controls-column::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
-        .controls-column::-webkit-scrollbar-thumb:hover { background: #aaa; }
+        .controls-column::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 3px; }
+        .controls-column::-webkit-scrollbar-thumb { background: #dcdde1; border-radius: 3px; }
+        .controls-column::-webkit-scrollbar-thumb:hover { background: #7f8fa6; }
 
         .content-area {
             flex: 1;
             display: flex;
             flex-direction: column;
-            padding: 15px;
+            padding: 20px;
             overflow: hidden;
+            background: #fafbfc;
         }
 
         /* =========================================
-           新增：高级分离式时间输入框 CSS
+           【重构】时分秒框 UI 完美居中对齐
            ========================================= */
         .time-input-group {
             display: flex;
-            gap: 4px;
+            gap: 6px;
             margin-bottom: 10px;
         }
 
         .time-input-wrapper {
             position: relative;
             flex: 1;
+            display: flex;
+            align-items: center; /* 强制垂直居中 */
         }
 
         .time-input-wrapper input {
-            padding-right: 22px; /* 给背景字留出空间 */
+            padding-right: 22px; /* 为背后的字留出空间 */
             text-align: center;
-            /* 隐藏默认的占位符 */
+            height: 34px;
+            width: 100%;
+            margin-bottom: 0; /* 抵消全局的 margin-bottom */
         }
 
         .time-input-unit {
             position: absolute;
             right: 8px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: #adb5bd;
-            pointer-events: none; /* 核心：事件穿透，绝不影响点击和输入 */
+            height: 100%;
+            display: flex;
+            align-items: center;  /* 文字完美垂直居中 */
+            color: #b2bec3;
+            pointer-events: none; /* 事件穿透，不影响点击输入 */
             font-size: 12px;
-            user-select: none; /* 核心：禁止文字选中 */
-            font-weight: 500;
+            user-select: none;    /* 不可被划蓝选中 */
+            font-weight: 600;
         }
 
         .time-separator {
@@ -197,7 +224,7 @@
             align-items: center;
             justify-content: center;
             font-weight: bold;
-            color: #555;
+            color: #7f8fa6;
         }
         /* ========================================= */
 
@@ -205,55 +232,67 @@
             font-size: 11px;
             text-align: center;
             margin-top: 5px;
+            color: #7f8fa6;
         }
 
         .control-divider {
             height: 1px;
-            background-color: #dee2e6;
-            margin: 15px 0;
+            background-color: #f0f0f0;
+            margin: 18px 0;
         }
 
         .section-title {
-            font-size: 14px;
-            font-weight: 700;
-            color: #2c3e50;
+            font-size: 15px;
+            font-weight: 800;
+            color: var(--primary-dark);
             margin-top: 10px;
-            margin-bottom: 10px;
-            border-left: 3px solid var(--primary);
-            padding-left: 8px;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+        }
+
+        .section-title::before {
+            content: '';
+            display: inline-block;
+            width: 4px;
+            height: 16px;
+            background: var(--primary);
+            margin-right: 8px;
+            border-radius: 2px;
         }
 
         #annotationInfo {
             font-size: 12px;
-            background: #eef2f7;
-            padding: 10px;
-            border-radius: 4px;
-            margin-top: 10px;
-            border: 1px solid #dce4ec;
+            background: #f4f7fe;
+            padding: 12px;
+            border-radius: 6px;
+            margin-top: 12px;
+            border: 1px solid #e2e8f0;
         }
 
         #mask-upload-status {
-            font-size: 11px;
+            font-size: 12px;
             color: var(--success);
-            margin-top: 5px;
+            margin-top: 8px;
             word-break: break-all;
-            background: rgba(39, 174, 96, 0.1);
-            padding: 5px;
-            border-radius: 4px;
+            background: rgba(39, 174, 96, 0.08);
+            padding: 8px;
+            border-radius: 6px;
             display: none;
+            font-weight: 600;
         }
     </style>
 </head>
 <body>
     <div class="main-container">
-        <nav class="navbar navbar-light bg-white border-bottom">
+        <nav class="navbar">
             <div class="container-fluid">
                 <a class="navbar-brand" href="#">
-                    <i class="fas fa-video me-2"></i>
-                    智能视频台标、角标、字幕清洗系统
+                    <i class="fas fa-cube me-2" style="color: var(--primary);"></i>
+                    智能视频信息处理平台
                 </a>
-                <button class="btn btn-outline-primary btn-sm" style="width: auto;" data-bs-toggle="modal" data-bs-target="#helpModal">
-                    <i class="fas fa-question-circle me-1"></i>操作说明
+                <button class="btn btn-outline-primary btn-sm" style="width: auto; margin-bottom: 0;" data-bs-toggle="modal" data-bs-target="#helpModal">
+                    <i class="fas fa-book-open me-1"></i>操作手册
                 </button>
             </div>
         </nav>
@@ -263,12 +302,12 @@
 
                 <div class="section-title" style="margin-top: 0;">视频源设置</div>
                 <div class="mb-2">
-                    <label class="form-label">选择视频文件</label>
+                    <label class="form-label text-muted">选择本机视频文件</label>
                     <input type="file" class="form-control" id="video-file" accept="video/*">
                 </div>
 
                 <button class="btn btn-primary" id="upload-btn">
-                    <i class="fas fa-upload me-1"></i>上传视频
+                    <i class="fas fa-cloud-upload-alt me-1"></i>上传视频至云端
                 </button>
 
                 <div class="mb-2" style="display: none;">
@@ -277,10 +316,10 @@
 
                 <div class="control-divider"></div>
 
-                <div class="section-title">Mask 制作面板</div>
+                <div class="section-title">Mask 标注中心</div>
 
-                <div class="mb-2">
-                    <label class="form-label">提取时间点</label>
+                <div class="mb-3">
+                    <label class="form-label text-muted">提取参考帧时间点</label>
                     <div class="time-input-group">
                         <div class="time-input-wrapper">
                             <input type="number" class="form-control" id="hours" min="0" value="0">
@@ -298,89 +337,88 @@
                         </div>
                     </div>
                     <button class="btn btn-outline-primary" id="extract-frame-btn">
-                        <i class="fas fa-camera me-1"></i>提取当前帧
+                        <i class="fas fa-crosshairs me-1"></i>提取视频画面
                     </button>
                 </div>
 
-                <div class="mb-2">
-                    <label class="form-label">画框设置</label>
+                <div class="mb-3">
+                    <label class="form-label text-muted">目标区域定义</label>
                     <div class="mb-2">
-                        <span class="small text-muted">区域类型</span>
                         <select id="regionType" class="form-select">
-                            <option value="logo">台标区域</option>
-                            <option value="subtitle">字幕区域</option>
-                            <option value="title">剧名区域</option>
-                            <option value="other">其他区域 (限时水印)</option>
+                            <option value="logo">台标区域 (全局)</option>
+                            <option value="subtitle">字幕区域 (全局)</option>
+                            <option value="title">剧名区域 (全局)</option>
+                            <option value="other">其他区域 (限时出现)</option>
                         </select>
-
-                        <div id="dynamicTimeContainers" style="margin-top: 5px;"></div>
+                        <div id="dynamicTimeContainers" style="margin-top: 8px;"></div>
                     </div>
                     <div>
-                        <span class="small text-muted">画框模式</span>
                         <select id="drawMode" class="form-select">
-                            <option value="large">区域框 (红色-整体)</option>
-                            <option value="small">目标框 (绿色-细节)</option>
-                            <option value="magic">🌟 魔法棒 (智能点选)</option>
+                            <option value="large">区域框 (红色-整体定位)</option>
+                            <option value="small">目标框 (绿色-细节剔除)</option>
+                            <option value="magic">🌟 魔法棒 (AI智能点选)</option>
                         </select>
                     </div>
                 </div>
 
                 <div class="mb-2">
                     <button class="btn btn-warning" id="start-drawing-btn">
-                        <i class="fas fa-pen me-1"></i>激活画笔
+                        <i class="fas fa-pen-nib me-1"></i>进入绘制模式
                     </button>
-                    <div class="row g-1">
+                    <div class="row g-2">
                         <div class="col-6">
                             <button class="btn btn-secondary" id="undo-btn">
-                                <i class="fas fa-undo me-1"></i>撤销
+                                <i class="fas fa-rotate-left me-1"></i>撤销
                             </button>
                         </div>
                         <div class="col-6">
                             <button class="btn btn-danger" id="clear-all-btn">
-                                <i class="fas fa-trash me-1"></i>清空
+                                <i class="fas fa-trash-can me-1"></i>清空
                             </button>
                         </div>
                     </div>
                 </div>
 
                 <button class="btn btn-success py-2 mt-2" id="generate-json-btn">
-                    <i class="fas fa-cloud-upload-alt me-1"></i>上传 Mask 至服务器
+                    <i class="fas fa-paper-plane me-1"></i>提交标注数据
                 </button>
                 <div id="mask-upload-status">
-                    <i class="fas fa-check-circle me-1"></i>Mask已就绪
+                    <i class="fas fa-check-circle me-1"></i>标注数据已同步至引擎
                 </div>
 
                 <div id="annotationInfo">
-                    <strong>当前标注统计：</strong>
-                    <div id="annotationDetails" class="mt-1 text-muted">尚未开始标注</div>
+                    <strong style="color: var(--primary-dark);">标注统计面板：</strong>
+                    <div id="annotationDetails" class="mt-2 text-muted">尚未生成有效标注</div>
                 </div>
 
                 <div class="control-divider"></div>
 
-                <div class="section-title">视频处理</div>
-                <div class="row g-1 mb-3">
+                <div class="section-title">分布式算力引擎</div>
+                <div class="row g-2 mb-3">
                     <div class="col-6">
                         <button class="btn btn-success mb-0" id="start-btn">
-                            <i class="fas fa-play me-1"></i>开始处理
+                            <i class="fas fa-rocket me-1"></i>启动清洗
                         </button>
                     </div>
                     <div class="col-6">
                         <button class="btn btn-danger mb-0" id="cancel-btn" disabled>
-                            <i class="fas fa-stop me-1"></i>停止
+                            <i class="fas fa-power-off me-1"></i>强制中断
                         </button>
                     </div>
                 </div>
 
-                <div class="mb-2">
-                    <label class="form-label">处理进度</label>
-                    <div class="progress">
-                        <div class="progress-bar" role="progressbar" style="width: 0%" id="progress-bar">0%</div>
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between align-items-end mb-1">
+                        <label class="form-label text-muted mb-0">实时处理进度</label>
+                        <span class="progress-text mb-0" id="progress-text" style="font-weight:bold; color:var(--primary);">就绪</span>
                     </div>
-                    <div class="progress-text" id="progress-text">准备就绪</div>
+                    <div class="progress">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%" id="progress-bar"></div>
+                    </div>
                 </div>
 
                 <button class="btn btn-primary mt-2" id="download-video-btn" disabled>
-                    <i class="fas fa-download me-1"></i>下载处理结果
+                    <i class="fas fa-download me-1"></i>下载纯净版视频
                 </button>
 
                 <div style="height: 30px;"></div>
@@ -389,9 +427,9 @@
             <div class="content-area">
                 <div class="mask-container" id="mask-container">
                     <div class="placeholder-text" id="frame-placeholder">
-                        <i class="fas fa-image fa-3x mb-3 text-muted"></i><br>
-                        请在左侧输入时间并点击"提取当前帧"<br>
-                        <small class="text-muted">提取后即可开始画框标注</small>
+                        <i class="fas fa-photo-film fa-4x mb-3 text-muted" style="opacity: 0.3;"></i><br>
+                        等待加载参考画面...<br>
+                        <small style="color: #a4b0be;">请在左侧指定时间并点击"提取视频画面"</small>
                     </div>
                     <img id="mask-image" class="mask-image" alt="帧图像" crossorigin="anonymous">
                     <canvas id="mask-canvas" class="mask-canvas"></canvas>
@@ -402,28 +440,25 @@
 
     <div class="modal fade" id="helpModal" tabindex="-1" aria-labelledby="helpModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="helpModalLabel">系统操作说明</h5>
+            <div class="modal-content" style="border-radius: 12px; border: none;">
+                <div class="modal-header" style="background: #f4f7fe; border-bottom: none; border-radius: 12px 12px 0 0;">
+                    <h5 class="modal-title fw-bold" id="helpModalLabel" style="color: var(--primary-dark);">系统操作手册</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-                <div class="modal-body">
-                    <h6>1. 准备工作</h6>
-                    <p>上传视频文件</p>
+                <div class="modal-body p-4">
+                    <h6 class="fw-bold text-primary">1. 资源准备</h6>
+                    <p class="text-muted">选择本地视频文件并上传至云端服务器。系统将在上传完成后自动获取视频总时长以供校验。</p>
 
-                    <h6>2. 制作 Mask</h6>
-                    <ol>
-                        <li>输入需要处理的视频时间点（时:分:秒）</li>
-                        <li>点击<strong>提取当前帧</strong></li>
-                        <li>画框标注区域：请先用区域框确定视频中需要处理的范围，再用目标框选中该范围内您想要移除的具体内容</li>
-                        <li>点击<strong>上传 Mask 至服务器</strong>。</li>
+                    <h6 class="fw-bold text-primary mt-4">2. 掩码 (Mask) 制作规范</h6>
+                    <ol class="text-muted">
+                        <li class="mb-2">在左侧面板输入时间，点击<strong>提取视频画面</strong>。如果输入时间超出视频长度，系统会智能拦截。</li>
+                        <li class="mb-2"><strong>限时水印处理：</strong>如果选择“其他区域”，请务必先画一个红色大框。画完后系统会自动生成时效控制面板，并严格校验您输入的起止时间。</li>
+                        <li class="mb-2"><strong>智能抠图：</strong>推荐使用 🌟魔法棒 点选目标，系统会自动沿用当前大框的归属及时间属性。</li>
+                        <li>绘制完成后，务必点击<strong>提交标注数据</strong>，将参数同步至推理引擎。</li>
                     </ol>
 
-                    <h6>3. 视频处理</h6>
-                    <p>确认 Mask 上传成功后，点击<strong>开始处理</strong>。系统将读取服务器上的 Mask 文件进行处理</p>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-primary btn-sm" data-bs-dismiss="modal">我知道了</button>
+                    <h6 class="fw-bold text-primary mt-4">3. 启动分布式引擎</h6>
+                    <p class="text-muted">点击<strong>启动清洗</strong>。系统将启用 AIMD 拥塞控制算法，智能调度集群算力并自动跳过无水印时间段。完成后即可下载纯净视频。</p>
                 </div>
             </div>
         </div>

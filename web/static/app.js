@@ -8,10 +8,13 @@ let startX, startY;
 let currentRect = null;
 let maskRects = [];
 let boxIdCounter = 0;
-let otherRegionCounter = 0; // 用来追踪产生了几组"其他区域"
+let otherRegionCounter = 0;
 
 let currentVideoFilename = '';
 let uploadedMaskFilename = null;
+
+// 【核心新增】全局保存服务器传回（或前端解析）的视频真实时长
+let globalVideoDuration = 0;
 
 let imageScale = 1;
 let imageOffsetX = 0;
@@ -42,25 +45,46 @@ function initializePage() {
 async function uploadVideo() {
     const fileInput = document.getElementById('video-file');
     if (!fileInput.files[0]) { alert('请选择要上传的视频文件'); return; }
-    const formData = new FormData();
-    formData.append('file', fileInput.files[0]);
 
+    const file = fileInput.files[0];
+
+    // 【核心新增】文件选择后，立刻在前端隐式获取其真实时长
+    const videoNode = document.createElement('video');
+    videoNode.preload = 'metadata';
+    videoNode.onloadedmetadata = function() {
+        globalVideoDuration = videoNode.duration;
+        window.URL.revokeObjectURL(videoNode.src);
+        console.log("已成功获取视频总时长:", globalVideoDuration, "秒");
+    };
+    videoNode.src = URL.createObjectURL(file);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const btn = document.getElementById('upload-btn');
+    const originalText = btn.innerHTML;
     try {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>上传云端中...';
         const response = await fetch('/api/upload', { method: 'POST', body: formData });
         const result = await response.json();
         if (response.ok) {
             document.getElementById('source-video').value = result.filename;
             currentVideoFilename = result.filename;
-            alert('视频上传成功！');
+            alert(`视频上传成功！\n系统检测到该视频总长为: ${Math.floor(globalVideoDuration)} 秒`);
         } else { alert('上传失败: ' + result.error); }
     } catch (error) { alert('上传错误: ' + error.message); }
+    finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    }
 }
 
 async function startProcessing() {
     const sourceVideo = document.getElementById('source-video').value;
     if (!sourceVideo) { alert('请设置源视频文件名'); return; }
     if (maskRects.length > 0 && !uploadedMaskFilename) {
-        if(!confirm('检测到您绘制了Mask但尚未上传。直接处理将忽略这些标注。\n是否继续？')) return;
+        if(!confirm('检测到您绘制了Mask但尚未提交同步。直接处理将忽略这些标注。\n是否继续？')) return;
     }
 
     const scriptParams = { ...FIXED_SCRIPT_PARAMS, source_video: currentVideoFilename, mask_file: uploadedMaskFilename };
@@ -98,7 +122,7 @@ async function downloadVideo() {
             const a = document.createElement('a');
             a.style.display = 'none';
             a.href = url;
-            a.download = '处理后视频.mp4';
+            a.download = '处理后纯净视频.mp4';
             document.body.appendChild(a);
             a.click();
             window.URL.revokeObjectURL(url);
@@ -112,9 +136,18 @@ async function downloadVideo() {
 
 async function extractFrame() {
     if (!currentVideoFilename) { alert('请先选择或上传视频'); return; }
+
     const hours = parseInt(document.getElementById('hours').value) || 0;
     const minutes = parseInt(document.getElementById('minutes').value) || 0;
     const seconds = parseInt(document.getElementById('seconds').value) || 0;
+
+    // 【核心新增】越界拦截校验
+    const totalSec = hours * 3600 + minutes * 60 + seconds;
+    if (globalVideoDuration > 0 && totalSec > globalVideoDuration) {
+        alert(`❌ 提取失败：您设定的提取时间点 (${totalSec}秒) 已超出视频的总时长 (${Math.floor(globalVideoDuration)}秒)！`);
+        return;
+    }
+
     const timestamp = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 
     const btn = document.getElementById('extract-frame-btn');
@@ -202,58 +235,58 @@ function toggleDrawingMode(forceState) {
 
     if (isDrawingMode) {
         btn.classList.remove('btn-warning'); btn.classList.add('btn-danger');
-        btn.innerHTML = '<i class="fas fa-stop me-1"></i>停止画框';
+        btn.innerHTML = '<i class="fas fa-stop me-1"></i>停止绘制';
         canvas.style.cursor = 'crosshair';
     } else {
         btn.classList.remove('btn-danger'); btn.classList.add('btn-warning');
-        btn.innerHTML = '<i class="fas fa-pen me-1"></i>激活画笔';
+        btn.innerHTML = '<i class="fas fa-pen-nib me-1"></i>进入绘制模式';
         canvas.style.cursor = 'default';
     }
 }
 
-// 动态创建极具交互感的三联时间输入框
+// 【重构】生成绝美的高级三联输入面板，并且绑定 onblur 校验机制
 function addOtherTimeInput(groupId) {
     const container = document.getElementById('dynamicTimeContainers');
     const div = document.createElement('div');
     div.className = 'mt-2 p-2 bg-light border rounded';
+    div.style.borderColor = '#dcdde1';
     div.id = `time_container_${groupId}`;
 
-    // oninput 绑定重绘，实现输入框更改，画布文本自动刷新！
     div.innerHTML = `
-        <div class="d-flex justify-content-between align-items-center mb-1">
-            <span class="small text-dark fw-bold">其他区域${groupId} 生效时间</span>
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <span class="text-primary fw-bold" style="font-size: 13px;">■ 其他区域${groupId} 生效时效</span>
         </div>
-        <div class="mb-1"><span class="small text-muted" style="font-size:11px;">起:</span></div>
-        <div class="time-input-group mb-1">
+        <div class="mb-1"><span class="small text-muted" style="font-size:11px; font-weight:bold;">起始时间:</span></div>
+        <div class="time-input-group mb-2">
             <div class="time-input-wrapper">
-                <input type="number" class="form-control form-control-sm" id="start_h_${groupId}" min="0" value="0" oninput="redrawCanvas(); updateAnnotationInfo();">
+                <input type="number" class="form-control form-control-sm" id="start_h_${groupId}" min="0" value="0" oninput="redrawCanvas();" onblur="validateTimeRange(${groupId})">
                 <span class="time-input-unit">时</span>
             </div>
             <div class="time-separator">:</div>
             <div class="time-input-wrapper">
-                <input type="number" class="form-control form-control-sm" id="start_m_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas(); updateAnnotationInfo();">
+                <input type="number" class="form-control form-control-sm" id="start_m_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas();" onblur="validateTimeRange(${groupId})">
                 <span class="time-input-unit">分</span>
             </div>
             <div class="time-separator">:</div>
             <div class="time-input-wrapper">
-                <input type="number" class="form-control form-control-sm" id="start_s_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas(); updateAnnotationInfo();">
+                <input type="number" class="form-control form-control-sm" id="start_s_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas();" onblur="validateTimeRange(${groupId})">
                 <span class="time-input-unit">秒</span>
             </div>
         </div>
-        <div class="mb-1 mt-2"><span class="small text-muted" style="font-size:11px;">止:</span></div>
+        <div class="mb-1 mt-1"><span class="small text-muted" style="font-size:11px; font-weight:bold;">终止时间:</span></div>
         <div class="time-input-group mb-1">
             <div class="time-input-wrapper">
-                <input type="number" class="form-control form-control-sm" id="end_h_${groupId}" min="0" value="0" oninput="redrawCanvas(); updateAnnotationInfo();">
+                <input type="number" class="form-control form-control-sm" id="end_h_${groupId}" min="0" value="0" oninput="redrawCanvas();" onblur="validateTimeRange(${groupId})">
                 <span class="time-input-unit">时</span>
             </div>
             <div class="time-separator">:</div>
             <div class="time-input-wrapper">
-                <input type="number" class="form-control form-control-sm" id="end_m_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas(); updateAnnotationInfo();">
+                <input type="number" class="form-control form-control-sm" id="end_m_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas();" onblur="validateTimeRange(${groupId})">
                 <span class="time-input-unit">分</span>
             </div>
             <div class="time-separator">:</div>
             <div class="time-input-wrapper">
-                <input type="number" class="form-control form-control-sm" id="end_s_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas(); updateAnnotationInfo();">
+                <input type="number" class="form-control form-control-sm" id="end_s_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas();" onblur="validateTimeRange(${groupId})">
                 <span class="time-input-unit">秒</span>
             </div>
         </div>
@@ -261,7 +294,46 @@ function addOtherTimeInput(groupId) {
     container.appendChild(div);
 }
 
-// 读取页面上的 DOM 时间以供画布或上传使用
+// 【核心新增】当用户移出输入框时(blur)，严格校验时长关系
+window.validateTimeRange = function(groupId) {
+    // 1. 获取输入值
+    const sh = parseInt(document.getElementById(`start_h_${groupId}`).value) || 0;
+    const sm = parseInt(document.getElementById(`start_m_${groupId}`).value) || 0;
+    const ss = parseInt(document.getElementById(`start_s_${groupId}`).value) || 0;
+    let eh = parseInt(document.getElementById(`end_h_${groupId}`).value) || 0;
+    let em = parseInt(document.getElementById(`end_m_${groupId}`).value) || 0;
+    let es = parseInt(document.getElementById(`end_s_${groupId}`).value) || 0;
+
+    const startTotal = sh * 3600 + sm * 60 + ss;
+    let endTotal = eh * 3600 + em * 60 + es;
+
+    // 如果都没填，先放过
+    if (startTotal === 0 && endTotal === 0) return;
+
+    // 2. 终止时间越界拦截 & 自动 Clamp 钳制修正
+    if (globalVideoDuration > 0 && endTotal > globalVideoDuration) {
+        endTotal = Math.floor(globalVideoDuration);
+        document.getElementById(`end_h_${groupId}`).value = Math.floor(endTotal / 3600);
+        document.getElementById(`end_m_${groupId}`).value = Math.floor((endTotal % 3600) / 60);
+        document.getElementById(`end_s_${groupId}`).value = endTotal % 60;
+        alert(`温馨提示：终止时间超出了视频总长度，系统已为您自动修正为视频片尾时刻 (${endTotal}秒)。`);
+    }
+
+    // 3. 起始时间越界拦截
+    if (globalVideoDuration > 0 && startTotal >= globalVideoDuration) {
+        alert(`❌ 错误：您的开始时间不能超出视频的总时长 (${Math.floor(globalVideoDuration)}秒)！`);
+    }
+
+    // 4. 逻辑悖论拦截：开始 >= 结束
+    if (startTotal > 0 && endTotal > 0 && startTotal >= endTotal) {
+        alert("❌ 错误：生效的【起始时间】必须严格小于【终止时间】！请重新输入。");
+    }
+
+    // 强制触发画布同步和统计刷新
+    redrawCanvas();
+    updateAnnotationInfo();
+};
+
 function getTimeRangeStr(otherId) {
     const sh = document.getElementById(`start_h_${otherId}`);
     const sm = document.getElementById(`start_m_${otherId}`);
@@ -291,23 +363,21 @@ function initDrawing() {
         const type = document.getElementById('regionType').value;
         const mode = document.getElementById('drawMode').value;
 
-        // 如果是"其他区域"，且当前试图点魔法棒或小框，必须先有大框做容器才能产生 UI 面板
         if (type === 'other') {
             if (mode !== 'large' && otherRegionCounter === 0) {
-                alert('请先使用【区域框】(红色整体) 圈定该"其他区域"的大致范围，系统将为您自动生成对应的时间设置项！');
+                alert('请先使用【区域框】(红框) 圈定该"其他区域"的大致范围，系统将为您自动生成对应的时间设置面板！');
                 isDrawingMode = false;
                 toggleDrawingMode(false);
                 return;
             }
         }
 
-        // ====== 魔法棒模式 ======
         if (mode === 'magic') {
             const btn = document.getElementById('start-drawing-btn');
             const originalText = btn.innerHTML;
 
             try {
-                btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>智能识别中...';
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>正在提交AI运算...';
                 newCanvas.style.cursor = 'wait';
 
                 const realCoords = displayToImageCoordinates(startX, startY);
@@ -326,12 +396,12 @@ function initDrawing() {
                         type: type,
                         mode: mode,
                         polygon: result.polygon,
-                        otherId: type === 'other' ? otherRegionCounter : null // 魔法棒自动认领最新的红框父亲
+                        otherId: type === 'other' ? otherRegionCounter : null
                     });
                     updateAnnotationInfo();
                     redrawCanvas(newCanvas);
-                } else { alert('未识别到明显对象，请换个点重试'); }
-            } catch (error) { alert('智能识别请求失败: ' + error.message); }
+                } else { alert('未识别到明显对象，请尝试在目标边缘点选'); }
+            } catch (error) { alert('AI推理节点通信失败: ' + error.message); }
             finally {
                 btn.innerHTML = originalText;
                 newCanvas.style.cursor = 'crosshair';
@@ -339,7 +409,6 @@ function initDrawing() {
             return;
         }
 
-        // ======= 矩形框逻辑 =======
         isDrawing = true;
         currentRect = { id: ++boxIdCounter, x: startX, y: startY, width: 0, height: 0, type: type, mode: mode };
     });
@@ -387,23 +456,20 @@ function redrawCanvas(canvasElement) {
 }
 
 function drawBox(ctx, box, isDashed = false) {
-    // 动态拉取当前 UI 上填写的最新时间
     let timeStr = "";
     if (box.type === 'other' && box.otherId) {
         timeStr = getTimeRangeStr(box.otherId);
     }
 
-    // 【完美体验】只在大红框展示时间和编号
     const isLarge = box.mode === 'large';
     const labelTitle = (box.type === 'other')
         ? `其他区域${box.otherId} [${timeStr.replace('-', ' 至 ')}]`
         : `${getRegionTypeName(box.type)}-${box.id}`;
 
-    // 魔法棒多边形：纯粹的半透明紫，【坚决不画任何文字】防止画面被遮挡
     if (box.mode === 'magic' && box.polygon) {
         ctx.strokeStyle = '#9b59b6';
         ctx.lineWidth = 2;
-        ctx.fillStyle = 'rgba(155, 89, 182, 0.3)';
+        ctx.fillStyle = 'rgba(155, 89, 182, 0.35)';
         ctx.beginPath();
         box.polygon.forEach((pt, index) => {
             const dispX = pt[0] * imageScale;
@@ -415,7 +481,7 @@ function drawBox(ctx, box, isDashed = false) {
     }
 
     const strokeColor = isLarge ? '#e74c3c' : '#27ae60';
-    const fillColor = isLarge ? 'rgba(231, 76, 60, 0.2)' : 'rgba(39, 174, 96, 0.2)';
+    const fillColor = isLarge ? 'rgba(231, 76, 60, 0.15)' : 'rgba(39, 174, 96, 0.2)';
 
     ctx.strokeStyle = strokeColor;
     ctx.lineWidth = 2;
@@ -424,13 +490,12 @@ function drawBox(ctx, box, isDashed = false) {
     ctx.fillRect(box.x, box.y, box.width, box.height);
     ctx.strokeRect(box.x, box.y, box.width, box.height);
 
-    // 只有红色大区域框才显示半透明的高级文字标签
     if (!isDashed && isLarge) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'; // 柔和的半透明磨砂黑底
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
         const textWidth = ctx.measureText(labelTitle).width + 10;
         ctx.fillRect(box.x, box.y - 20, textWidth, 20);
 
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.95)'; // 高清晰白字
+        ctx.fillStyle = 'rgba(255, 255, 255, 1)';
         ctx.font = '12px Arial';
         ctx.textBaseline = 'bottom';
         ctx.fillText(labelTitle, box.x + 5, box.y - 5);
@@ -444,7 +509,7 @@ function getRegionTypeName(type) {
 
 function updateAnnotationInfo() {
     const details = document.getElementById('annotationDetails');
-    if (maskRects.length === 0) { details.innerHTML = '尚未开始标注'; return; }
+    if (maskRects.length === 0) { details.innerHTML = '尚未生成有效标注'; return; }
 
     const counts = {};
     maskRects.forEach(box => {
@@ -467,10 +532,10 @@ function updateAnnotationInfo() {
     Object.keys(counts).forEach(key => {
         const c = counts[key];
         html += `<div class="mb-1">
-            <span class="badge bg-secondary me-1">${c.name}</span>
-            <span class="text-danger small">大框:${c.large}</span> 
-            <span class="text-success small">小框:${c.small}</span>
-            ${c.magic > 0 ? `<span class="text-primary small">智能:${c.magic}</span>` : ''}
+            <span class="badge" style="background-color: var(--primary); margin-right:4px;">${c.name}</span>
+            <span class="text-danger small fw-bold">红框:${c.large}</span> 
+            <span class="text-success small fw-bold" style="margin-left:4px;">绿框:${c.small}</span>
+            ${c.magic > 0 ? `<span class="text-primary small fw-bold" style="margin-left:4px;">魔法棒:${c.magic}</span>` : ''}
         </div>`;
     });
     details.innerHTML = html;
@@ -479,7 +544,6 @@ function updateAnnotationInfo() {
 function undoLastBox() {
     if (maskRects.length > 0) {
         const removed = maskRects.pop();
-        // 撤销连坐机制：如果撤销了红框，连带撤销左侧生成的UI时间面板
         if (removed.type === 'other' && removed.mode === 'large') {
             const container = document.getElementById(`time_container_${removed.otherId}`);
             if (container) container.remove();
@@ -492,7 +556,7 @@ function undoLastBox() {
 
 function clearAllBoxes() {
     if (maskRects.length === 0) return;
-    if (confirm('确定要清空所有标注框吗？')) {
+    if (confirm('危险操作：确定要清空画布上所有的标注框吗？')) {
         maskRects = [];
         otherRegionCounter = 0;
         document.getElementById('dynamicTimeContainers').innerHTML = '';
@@ -501,9 +565,8 @@ function clearAllBoxes() {
     }
 }
 
-// ====== JSON 生成（自动归拢时间） ======
 async function generateJSON() {
-    if (maskRects.length === 0) { alert('没有标注数据，请先画框标注'); return; }
+    if (maskRects.length === 0) { alert('画布为空，无法生成标注集'); return; }
 
     const maskImage = document.getElementById('mask-image');
     const jsonData = {
@@ -515,6 +578,8 @@ async function generateJSON() {
         regions: {}
     };
 
+    let hasTimeError = false;
+
     maskRects.forEach(box => {
         let regionKey = box.type;
         let typeName = getRegionTypeName(box.type);
@@ -523,7 +588,12 @@ async function generateJSON() {
         if (box.type === 'other') {
             regionKey = `other_${box.otherId}`;
             typeName = `其他区域${box.otherId}`;
-            timeRange = getTimeRangeStr(box.otherId); // 取出 "0:3:23-0:4:23" 给后端解析
+            timeRange = getTimeRangeStr(box.otherId);
+            // 提交时进行最终严格校验
+            const parts = timeRange.split('-');
+            if (parts.length !== 2 || parts[0] === "0:0:0" && parts[1] === "0:0:0") {
+                hasTimeError = true;
+            }
         }
 
         if (!jsonData.regions[regionKey]) {
@@ -541,11 +611,16 @@ async function generateJSON() {
         }
     });
 
+    if (hasTimeError) {
+        alert('上传拦截：您有"其他区域"未设置有效的起止时间。请设定正确的时效再试！');
+        return;
+    }
+
     const btn = document.getElementById('generate-json-btn');
     const originalBtnText = btn.innerHTML;
     try {
         btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>正在上传...';
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>正在打包同步...';
         const response = await fetch('/api/save-mask', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -556,10 +631,10 @@ async function generateJSON() {
             uploadedMaskFilename = result.mask_filename;
             const statusDiv = document.getElementById('mask-upload-status');
             statusDiv.style.display = 'block';
-            statusDiv.innerHTML = `<i class="fas fa-check-circle me-1"></i>Mask已保存至服务器`;
-            alert(`Mask文件已成功上传至服务器！`);
+            statusDiv.innerHTML = `<i class="fas fa-check-circle me-1"></i>标注集已成功挂载至引擎`;
+            alert(`标注提交成功！可以启动分布式引擎进行清洗了。`);
         } else { throw new Error(result.error || '上传失败'); }
-    } catch (error) { alert('Mask上传失败: ' + error.message); }
+    } catch (error) { alert('云端网络异常: ' + error.message); }
     finally { btn.disabled = false; btn.innerHTML = originalBtnText; }
 }
 
@@ -605,14 +680,13 @@ function startStatusPolling() {
 function updateTaskStatus(task) {
     const progressBar = document.getElementById('progress-bar');
     progressBar.style.width = task.progress + '%';
-    progressBar.textContent = task.progress + '%';
     document.getElementById('progress-text').textContent = getStageText(task.current_stage) + ' ' + task.progress + '%';
     document.getElementById('download-video-btn').disabled = (task.status !== 'completed');
 }
 
 function getStageText(stage) {
-    const stageMap = { 'initialization': '初始化', 'scene_detection': '场景检测', 'mask_generation': '掩码生成', 'video_processing': '视频处理', 'finalizing': '最终处理', 'completed': '完成' };
-    return stageMap[stage] || stage || '准备开始';
+    const stageMap = { 'initialization': '分配算力', 'scene_detection': '光流分析', 'mask_generation': '渲染掩码', 'video_processing': '分布式AI推理', 'finalizing': '编码合成', 'completed': '清洗完毕' };
+    return stageMap[stage] || stage || '节点唤醒中';
 }
 
 document.addEventListener('DOMContentLoaded', function() {

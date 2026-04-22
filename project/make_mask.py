@@ -4,6 +4,7 @@ import argparse
 import cv2
 import numpy as np
 import re
+import math  # 【核心新增】用于向上/向下取整
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
@@ -36,13 +37,13 @@ def process_single_frame_mask(img_path, local_poses, output_dir, time_ranges, fp
     frame_idx = int(m_idx.group()) if m_idx else -1
 
     for key, coords in local_poses.items():
-        # 【时间 -> 帧数 终极换算】利用视频的真实 FPS 计算出目标帧
+        # 【完美时间囊括算法】开始时间向下取整(提前触发)，结束时间向上取整(延后结束)
         if key in time_ranges:
             start_sec, end_sec = time_ranges[key]
-            start_f = start_sec * fps
-            end_f = end_sec * fps
+            start_f = math.floor(start_sec * fps)
+            end_f = math.ceil(end_sec * fps)
             if not (start_f <= frame_idx <= end_f):
-                continue  # 当前帧不在生效时间内，直接跳过不画图！
+                continue
 
         is_solid = (key != '2')
 
@@ -106,7 +107,6 @@ def generate_local_masks(frame_dir, output_dir, original_poses, crop_coords, tim
     has_static_content = False
 
     for key, coords in local_poses.items():
-        # 【排除法则】如果它是有时间限制区域，绝对不能画进静态底图里，否则全集都会被黑幕遮盖！
         if key != '2' and key not in time_ranges:
             for item in coords:
                 if len(item) == 4 and isinstance(item[0], (int, float)):
@@ -128,7 +128,7 @@ def generate_local_masks(frame_dir, output_dir, original_poses, crop_coords, tim
         local_poses=local_poses,
         output_dir=output_dir,
         time_ranges=time_ranges,
-        fps=fps  # 向下传递算好的 FPS 因子
+        fps=fps
     )
 
     frame_paths = [os.path.join(frame_dir, f) for f in frames]
