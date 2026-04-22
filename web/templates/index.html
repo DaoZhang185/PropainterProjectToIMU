@@ -8,123 +8,167 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         :root {
-            /* 采用类似奥云AI的现代科技蓝紫渐变主色调 */
-            --primary: #505efa;
-            --primary-dark: #303cdb;
-            --success: #27ae60;
-            --warning: #f39c12;
-            --danger: #e74c3c;
-            --dark: #2c3e50;
-            --light: #ecf0f1;
+            /* 采用奥云AI同款的高亮商务蓝与扁平化色彩体系 */
+            --primary: #3b5eff;
+            --primary-hover: #5c7aff;
+            --success: #13ce66;
+            --warning: #ffba00;
+            --danger: #ff4949;
+            --dark: #303133;
+            --gray-text: #909399;
+            --light-bg: #f5f7fa; /* 极简浅灰背景 */
+            --border-color: #e4e7ed;
         }
 
         body {
-            /* 全局渐变背景 */
-            background: linear-gradient(135deg, #505efa 0%, #303cdb 100%);
+            /* 替换原有的渐变色，使用高级的极简浅灰 */
+            background: var(--light-bg);
             min-height: 100vh;
-            font-family: 'Microsoft YaHei', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            padding: 15px;
+            font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
+            padding: 0;
             margin: 0;
             overflow: hidden;
         }
 
         .main-container {
-            background: #ffffff;
-            border-radius: 16px;
-            box-shadow: 0 15px 35px rgba(0,0,0,0.2);
-            overflow: hidden;
-            height: calc(100vh - 30px);
+            background: transparent;
+            box-shadow: none;
+            height: 100vh;
             display: flex;
             flex-direction: column;
         }
 
+        /* 顶部导航栏白底+底边框 */
         .navbar {
             background: #ffffff !important;
-            border-bottom: 1px solid #f0f0f0;
-            padding: 12px 20px;
+            border-bottom: 1px solid var(--border-color);
+            padding: 12px 24px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+            z-index: 10;
         }
 
         .navbar-brand {
-            font-weight: 800;
-            color: var(--primary-dark) !important;
-            font-size: 20px;
-            letter-spacing: 1px;
+            font-weight: 700;
+            color: var(--dark) !important;
+            font-size: 18px;
+            letter-spacing: 0.5px;
         }
 
         .btn {
-            border-radius: 6px;
-            font-weight: 600;
+            border-radius: 4px; /* 扁平化圆角 */
+            font-weight: 500;
             padding: 8px 12px;
             font-size: 13px;
-            transition: all 0.3s ease;
+            transition: all 0.2s ease;
             margin-bottom: 8px;
             width: 100%;
+            border: none;
         }
 
-        .btn-primary { background: linear-gradient(90deg, var(--primary), var(--primary-dark)); border: none; }
-        .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 10px rgba(80, 94, 250, 0.3); }
-        .btn-outline-primary { color: var(--primary); border-color: var(--primary); }
-        .btn-outline-primary:hover { background: var(--primary); color: white; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { background: var(--primary-hover); color: white; }
+        .btn-outline-primary { color: var(--primary); border: 1px solid var(--primary); background: transparent; }
+        .btn-outline-primary:hover { background: var(--primary); color: white; border-color: var(--primary); }
 
-        .btn-success { background: var(--success); border-color: var(--success); }
-        .btn-warning { background: var(--warning); border-color: var(--warning); color: white; }
-        .btn-danger { background: var(--danger); border-color: var(--danger); }
-        .btn-secondary { background: #95a5a6; border-color: #95a5a6; color: white; }
+        .btn-success { background: var(--success); color: white; }
+        .btn-warning { background: var(--warning); color: white; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-secondary { background: #c0c4cc; color: white; }
 
         .form-control, .form-select {
             font-size: 13px;
             padding: 6px 10px;
             height: auto;
             margin-bottom: 8px;
-            border-radius: 6px;
-            border: 1px solid #dfe4ea;
+            border-radius: 4px;
+            border: 1px solid #dcdfe6;
+            color: var(--dark);
         }
 
         .form-control:focus, .form-select:focus {
             border-color: var(--primary);
-            box-shadow: 0 0 0 0.2rem rgba(80, 94, 250, 0.15);
+            box-shadow: none; /* 去除光晕，保持边框高亮 */
         }
 
         .form-label {
             font-size: 13px;
-            font-weight: 700;
+            font-weight: 600;
             margin-bottom: 6px;
-            color: #34495e;
+            color: var(--dark);
         }
 
         .progress {
-            height: 14px;
-            border-radius: 7px;
-            background: #edf2f7;
+            height: 12px;
+            border-radius: 6px;
+            background: #ebeef5;
             margin-bottom: 8px;
         }
 
         .progress-bar {
-            background: linear-gradient(45deg, var(--primary), #7582f5);
-            border-radius: 7px;
+            background: var(--primary); /* 纯色扁平化 */
+            border-radius: 6px;
             transition: width 0.4s ease;
-            font-weight: 600;
+            font-weight: 500;
             font-size: 10px;
+        }
+
+        /* 工作区布局重构：卡片悬浮风格 */
+        .main-content {
+            display: flex;
+            flex: 1;
+            gap: 16px; /* 两块白色卡片之间的间距 */
+            padding: 16px 24px;
+            height: calc(100vh - 60px);
+            overflow: hidden;
+        }
+
+        .controls-column {
+            width: 320px;
+            padding: 20px;
+            background: #ffffff;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: 0 2px 12px 0 rgba(0,0,0,0.05); /* 柔和阴影 */
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+
+        .controls-column::-webkit-scrollbar { width: 6px; }
+        .controls-column::-webkit-scrollbar-track { background: transparent; }
+        .controls-column::-webkit-scrollbar-thumb { background: #dcdde1; border-radius: 3px; }
+        .controls-column::-webkit-scrollbar-thumb:hover { background: #c0c4cc; }
+
+        .content-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 16px;
+            background: #ffffff;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: 0 2px 12px 0 rgba(0,0,0,0.05);
+            overflow: hidden;
         }
 
         .mask-container {
             position: relative;
             flex: 1;
-            background: #f4f7fe;
-            border: 2px dashed #dcdde1;
-            border-radius: 12px;
+            background: #fafafa;
+            border: 1px dashed #c0c4cc;
+            border-radius: 6px;
             overflow: hidden;
             display: flex;
             align-items: center;
             justify-content: center;
-            margin-left: 10px;
         }
 
         .placeholder-text {
             text-align: center;
-            color: #7f8fa6;
+            color: var(--gray-text);
             z-index: 1;
-            font-size: 15px;
+            font-size: 14px;
         }
 
         .mask-image {
@@ -150,41 +194,7 @@
             display: block;
         }
 
-        .main-content {
-            display: flex;
-            flex: 1;
-            overflow: hidden;
-        }
-
-        .controls-column {
-            width: 300px;
-            padding: 20px;
-            background: #ffffff;
-            border-right: 1px solid #f0f0f0;
-            display: flex;
-            flex-direction: column;
-            overflow-y: auto;
-            max-height: calc(100vh - 85px);
-            flex-shrink: 0;
-        }
-
-        .controls-column::-webkit-scrollbar { width: 6px; }
-        .controls-column::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 3px; }
-        .controls-column::-webkit-scrollbar-thumb { background: #dcdde1; border-radius: 3px; }
-        .controls-column::-webkit-scrollbar-thumb:hover { background: #7f8fa6; }
-
-        .content-area {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            padding: 20px;
-            overflow: hidden;
-            background: #fafbfc;
-        }
-
-        /* =========================================
-           【重构】时分秒框 UI 完美居中对齐
-           ========================================= */
+        /* 时分秒框 UI 完美居中对齐 */
         .time-input-group {
             display: flex;
             gap: 6px;
@@ -195,15 +205,15 @@
             position: relative;
             flex: 1;
             display: flex;
-            align-items: center; /* 强制垂直居中 */
+            align-items: center;
         }
 
         .time-input-wrapper input {
-            padding-right: 22px; /* 为背后的字留出空间 */
+            padding-right: 22px;
             text-align: center;
-            height: 34px;
+            height: 32px;
             width: 100%;
-            margin-bottom: 0; /* 抵消全局的 margin-bottom */
+            margin-bottom: 0;
         }
 
         .time-input-unit {
@@ -211,12 +221,11 @@
             right: 8px;
             height: 100%;
             display: flex;
-            align-items: center;  /* 文字完美垂直居中 */
-            color: #b2bec3;
-            pointer-events: none; /* 事件穿透，不影响点击输入 */
+            align-items: center;
+            color: #c0c4cc;
+            pointer-events: none;
             font-size: 12px;
-            user-select: none;    /* 不可被划蓝选中 */
-            font-weight: 600;
+            user-select: none;
         }
 
         .time-separator {
@@ -224,29 +233,28 @@
             align-items: center;
             justify-content: center;
             font-weight: bold;
-            color: #7f8fa6;
+            color: var(--dark);
         }
-        /* ========================================= */
 
         .progress-text {
-            font-size: 11px;
-            text-align: center;
+            font-size: 12px;
+            text-align: right;
             margin-top: 5px;
-            color: #7f8fa6;
+            color: var(--gray-text);
         }
 
         .control-divider {
             height: 1px;
-            background-color: #f0f0f0;
-            margin: 18px 0;
+            background-color: var(--border-color);
+            margin: 20px 0;
         }
 
         .section-title {
-            font-size: 15px;
-            font-weight: 800;
-            color: var(--primary-dark);
-            margin-top: 10px;
-            margin-bottom: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--dark);
+            margin-top: 5px;
+            margin-bottom: 15px;
             display: flex;
             align-items: center;
         }
@@ -254,20 +262,20 @@
         .section-title::before {
             content: '';
             display: inline-block;
-            width: 4px;
-            height: 16px;
+            width: 3px;
+            height: 14px;
             background: var(--primary);
             margin-right: 8px;
-            border-radius: 2px;
+            border-radius: 1.5px;
         }
 
         #annotationInfo {
             font-size: 12px;
-            background: #f4f7fe;
+            background: #fdfdfd;
             padding: 12px;
-            border-radius: 6px;
+            border-radius: 4px;
             margin-top: 12px;
-            border: 1px solid #e2e8f0;
+            border: 1px solid var(--border-color);
         }
 
         #mask-upload-status {
@@ -275,23 +283,22 @@
             color: var(--success);
             margin-top: 8px;
             word-break: break-all;
-            background: rgba(39, 174, 96, 0.08);
+            background: #f0f9eb;
             padding: 8px;
-            border-radius: 6px;
+            border-radius: 4px;
             display: none;
-            font-weight: 600;
+            border: 1px solid #e1f3d8;
         }
     </style>
 </head>
 <body>
     <div class="main-container">
         <nav class="navbar">
-            <div class="container-fluid">
-                <a class="navbar-brand" href="#">
-                    <i class="fas fa-cube me-2" style="color: var(--primary);"></i>
-                    视频智能清洗平台
+            <div class="container-fluid d-flex justify-content-between align-items-center">
+                <a class="navbar-brand d-flex align-items-center" href="#">
+                    <span style="font-weight: 900; letter-spacing: 1px;">智能视频清洗系统</span>
                 </a>
-                <button class="btn btn-outline-primary btn-sm" style="width: auto; margin-bottom: 0;" data-bs-toggle="modal" data-bs-target="#helpModal">
+                <button class="btn btn-outline-primary btn-sm" style="width: auto; margin-bottom: 0; padding: 6px 16px; border-radius: 16px;" data-bs-toggle="modal" data-bs-target="#helpModal">
                     <i class="fas fa-book-open me-1"></i>操作手册
                 </button>
             </div>
@@ -302,7 +309,7 @@
 
                 <div class="section-title" style="margin-top: 0;">视频源设置</div>
                 <div class="mb-2">
-                    <label class="form-label text-muted">选择本地视频文件</label>
+                    <label class="form-label text-muted" style="font-weight: 400; font-size: 12px;">选择本地视频文件</label>
                     <input type="file" class="form-control" id="video-file" accept="video/*">
                 </div>
 
@@ -319,7 +326,7 @@
                 <div class="section-title">智能选区工作台</div>
 
                 <div class="mb-3">
-                    <label class="form-label text-muted">提取参考帧时间点</label>
+                    <label class="form-label text-muted" style="font-weight: 400; font-size: 12px;">提取参考帧时间点</label>
                     <div class="time-input-group">
                         <div class="time-input-wrapper">
                             <input type="number" class="form-control" id="hours" min="0" value="0">
@@ -342,7 +349,7 @@
                 </div>
 
                 <div class="mb-3">
-                    <label class="form-label text-muted">目标区域定义</label>
+                    <label class="form-label text-muted" style="font-weight: 400; font-size: 12px;">目标区域定义</label>
                     <div class="mb-2">
                         <select id="regionType" class="form-select">
                             <option value="logo">台标区域 (全局)</option>
@@ -365,7 +372,7 @@
                     <button class="btn btn-warning" id="start-drawing-btn">
                         <i class="fas fa-pen-nib me-1"></i>进入绘制模式
                     </button>
-                    <div class="row g-2">
+                    <div class="row g-2 mt-1">
                         <div class="col-6">
                             <button class="btn btn-secondary" id="undo-btn">
                                 <i class="fas fa-rotate-left me-1"></i>撤销
@@ -379,7 +386,7 @@
                     </div>
                 </div>
 
-                <button class="btn btn-success py-2 mt-2" id="generate-json-btn">
+                <button class="btn btn-success py-2 mt-3" id="generate-json-btn">
                     <i class="fas fa-paper-plane me-1"></i>提交标注数据
                 </button>
                 <div id="mask-upload-status">
@@ -387,8 +394,8 @@
                 </div>
 
                 <div id="annotationInfo">
-                    <strong style="color: var(--primary-dark);">标注统计面板：</strong>
-                    <div id="annotationDetails" class="mt-2 text-muted">尚未生成有效标注</div>
+                    <strong style="color: var(--dark); font-weight: 600;">标注统计面板：</strong>
+                    <div id="annotationDetails" class="mt-2 text-muted" style="font-size: 11px;">尚未生成有效标注</div>
                 </div>
 
                 <div class="control-divider"></div>
@@ -396,7 +403,7 @@
                 <div class="section-title">AI 生成</div>
                 <div class="row g-2 mb-3">
                     <div class="col-6">
-                        <button class="btn btn-success mb-0" id="start-btn">
+                        <button class="btn btn-primary mb-0" id="start-btn">
                             <i class="fas fa-rocket me-1"></i>启动清洗
                         </button>
                     </div>
@@ -408,16 +415,16 @@
                 </div>
 
                 <div class="mb-3">
-                    <div class="d-flex justify-content-between align-items-end mb-1">
-                        <label class="form-label text-muted mb-0">实时处理进度</label>
-                        <span class="progress-text mb-0" id="progress-text" style="font-weight:bold; color:var(--primary);">就绪</span>
-                    </div>
                     <div class="progress">
                         <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%" id="progress-bar"></div>
                     </div>
+                    <div class="d-flex justify-content-between align-items-start">
+                        <span style="font-size: 11px; color: var(--gray-text);">实时处理进度</span>
+                        <span class="progress-text mb-0" id="progress-text" style="font-weight:600; color:var(--primary);">就绪</span>
+                    </div>
                 </div>
 
-                <button class="btn btn-primary mt-2" id="download-video-btn" disabled>
+                <button class="btn btn-outline-primary mt-2" id="download-video-btn" disabled>
                     <i class="fas fa-download me-1"></i>下载处理后的视频
                 </button>
 
@@ -427,9 +434,9 @@
             <div class="content-area">
                 <div class="mask-container" id="mask-container">
                     <div class="placeholder-text" id="frame-placeholder">
-                        <i class="fas fa-photo-film fa-4x mb-3 text-muted" style="opacity: 0.3;"></i><br>
+                        <i class="fas fa-photo-film fa-4x mb-3" style="color: #dcdfe6;"></i><br>
                         等待加载参考画面...<br>
-                        <small style="color: #a4b0be;">请在左侧指定时间并点击"提取视频画面"</small>
+                        <small style="color: #c0c4cc; font-size: 12px;">请在左侧指定时间并点击"提取视频画面"</small>
                     </div>
                     <img id="mask-image" class="mask-image" alt="帧图像" crossorigin="anonymous">
                     <canvas id="mask-canvas" class="mask-canvas"></canvas>
@@ -440,25 +447,25 @@
 
     <div class="modal fade" id="helpModal" tabindex="-1" aria-labelledby="helpModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
-            <div class="modal-content" style="border-radius: 12px; border: none;">
-                <div class="modal-header" style="background: #f4f7fe; border-bottom: none; border-radius: 12px 12px 0 0;">
-                    <h5 class="modal-title fw-bold" id="helpModalLabel" style="color: var(--primary-dark);">系统操作手册</h5>
+            <div class="modal-content" style="border-radius: 8px; border: none; box-shadow: 0 4px 16px rgba(0,0,0,0.1);">
+                <div class="modal-header" style="background: #fafafa; border-bottom: 1px solid var(--border-color); border-radius: 8px 8px 0 0;">
+                    <h5 class="modal-title fw-bold" id="helpModalLabel" style="color: var(--dark); font-size: 16px;">系统操作手册</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body p-4">
-                    <h6 class="fw-bold text-primary">1. 资源准备</h6>
-                    <p class="text-muted">选择本地视频文件并上传至云端服务器。系统将在上传完成后自动获取视频总时长以供校验。</p>
+                    <h6 class="fw-bold" style="color: var(--primary);">1. 资源准备</h6>
+                    <p class="text-muted" style="font-size: 13px;">选择本地视频文件并上传至云端服务器。系统将在上传完成后自动获取视频总时长以供校验。</p>
 
-                    <h6 class="fw-bold text-primary mt-4">2. 掩码 (Mask) 制作规范</h6>
-                    <ol class="text-muted">
-                        <li class="mb-2">在左侧面板输入时间，点击<strong>提取视频画面</strong>。如果输入时间超出视频长度，系统会智能拦截。</li>
-                        <li class="mb-2"><strong>限时水印处理：</strong>如果选择“其他区域”，请务必先画一个红色大框。画完后系统会自动生成时效控制面板，并严格校验您输入的起止时间。</li>
-                        <li class="mb-2"><strong>智能抠图：</strong>推荐使用 🌟魔法棒 点选目标，系统会自动沿用当前大框的归属及时间属性。</li>
+                    <h6 class="fw-bold mt-4" style="color: var(--primary);">2. 掩码 (Mask) 制作规范</h6>
+                    <ol class="text-muted" style="font-size: 13px; line-height: 1.8;">
+                        <li class="mb-1">在左侧面板输入时间，点击<strong>提取视频画面</strong>。如果输入时间超出视频长度，系统会智能拦截。</li>
+                        <li class="mb-1"><strong>限时水印处理：</strong>如果选择“其他区域”，请务必先画一个红色大框。画完后系统会自动生成时效控制面板，并严格校验您输入的起止时间。</li>
+                        <li class="mb-1"><strong>智能抠图：</strong>推荐使用 🌟魔法棒 点选目标，系统会自动沿用当前大框的归属及时间属性。</li>
                         <li>绘制完成后，务必点击<strong>提交标注数据</strong>，将参数同步至推理引擎。</li>
                     </ol>
 
-                    <h6 class="fw-bold text-primary mt-4">3. 启动分布式引擎</h6>
-                    <p class="text-muted">点击<strong>启动清洗</strong>。系统将启用 AIMD 拥塞控制算法，智能调度集群算力并自动跳过无水印时间段。完成后即可下载纯净视频。</p>
+                    <h6 class="fw-bold mt-4" style="color: var(--primary);">3. 启动分布式引擎</h6>
+                    <p class="text-muted" style="font-size: 13px;">点击<strong>启动清洗</strong>。系统将启用 AIMD 拥塞控制算法，智能调度集群算力并自动跳过无水印时间段。完成后即可下载纯净视频。</p>
                 </div>
             </div>
         </div>
