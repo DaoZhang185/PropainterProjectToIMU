@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>智能视频台标、角标、字幕清洗系统</title>
+    <title>视频智能清洗系统</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -289,7 +289,7 @@
             <div class="container-fluid">
                 <a class="navbar-brand" href="#">
                     <i class="fas fa-cube me-2" style="color: var(--primary);"></i>
-                    智能视频信息处理平台
+                    视频智能清洗平台
                 </a>
                 <button class="btn btn-outline-primary btn-sm" style="width: auto; margin-bottom: 0;" data-bs-toggle="modal" data-bs-target="#helpModal">
                     <i class="fas fa-book-open me-1"></i>操作手册
@@ -302,7 +302,7 @@
 
                 <div class="section-title" style="margin-top: 0;">视频源设置</div>
                 <div class="mb-2">
-                    <label class="form-label text-muted">选择本机视频文件</label>
+                    <label class="form-label text-muted">选择本地视频文件</label>
                     <input type="file" class="form-control" id="video-file" accept="video/*">
                 </div>
 
@@ -316,7 +316,7 @@
 
                 <div class="control-divider"></div>
 
-                <div class="section-title">Mask 标注中心</div>
+                <div class="section-title">智能选区工作台</div>
 
                 <div class="mb-3">
                     <label class="form-label text-muted">提取参考帧时间点</label>
@@ -355,7 +355,7 @@
                     <div>
                         <select id="drawMode" class="form-select">
                             <option value="large">区域框 (红色-整体定位)</option>
-                            <option value="small">目标框 (绿色-细节剔除)</option>
+                            <option value="small" style="display: none;">目标框 (绿色-细节剔除)</option>
                             <option value="magic">🌟 魔法棒 (AI智能点选)</option>
                         </select>
                     </div>
@@ -393,7 +393,7 @@
 
                 <div class="control-divider"></div>
 
-                <div class="section-title">分布式算力引擎</div>
+                <div class="section-title">AI 生成</div>
                 <div class="row g-2 mb-3">
                     <div class="col-6">
                         <button class="btn btn-success mb-0" id="start-btn">

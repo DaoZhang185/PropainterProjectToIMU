@@ -534,7 +534,6 @@ function updateAnnotationInfo() {
         html += `<div class="mb-1">
             <span class="badge" style="background-color: var(--primary); margin-right:4px;">${c.name}</span>
             <span class="text-danger small fw-bold">红框:${c.large}</span> 
-            <span class="text-success small fw-bold" style="margin-left:4px;">绿框:${c.small}</span>
             ${c.magic > 0 ? `<span class="text-primary small fw-bold" style="margin-left:4px;">魔法棒:${c.magic}</span>` : ''}
         </div>`;
     });
