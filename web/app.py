@@ -1,9 +1,6 @@
-from flask import Flask, render_template, request, jsonify, send_file
-from flask_cors import CORS
 import os
 import sys
 import logging
-from werkzeug.utils import secure_filename
 import threading
 from datetime import datetime
 import uuid
@@ -12,35 +9,59 @@ import glob
 import cv2
 import base64
 import subprocess
-from sam_helper import SAMService
+import shutil
 
-app = Flask(__name__)
-CORS(app)
+from fastapi import FastAPI, UploadFile, File, Request, HTTPException
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+
+from sam_helper import SAMService
 
 # =================================================================
 # 【核心改造】全自动路径解析 (不再写死任何绝对路径)
 # =================================================================
-# WEB_DIR 就是当前 app.py 所在的文件夹 (web)
 WEB_DIR = os.path.dirname(os.path.abspath(__file__))
-# PROPAINTER_ROOT 就是 WEB_DIR 的上一级 (ProPainter)
 PROPAINTER_ROOT = os.path.dirname(WEB_DIR)
-# PROJECT_DIR 就是后端的目录 (project)
 PROJECT_DIR = os.path.join(PROPAINTER_ROOT, 'project')
 
-app.config['SECRET_KEY'] = 'your-secret-key-change-in-production'
-app.config['UPLOAD_FOLDER'] = os.path.join(PROPAINTER_ROOT, 'uploads')
-app.config['VIDEO_FOLDER'] = os.path.join(PROPAINTER_ROOT, 'videos')
-app.config['RESULTS_FOLDER'] = os.path.join(PROPAINTER_ROOT, 'results')
-app.config['MAX_CONTENT_LENGTH'] = 2000 * 1024 * 1024
+UPLOAD_FOLDER = os.path.join(PROPAINTER_ROOT, 'uploads')
+VIDEO_FOLDER = os.path.join(PROPAINTER_ROOT, 'videos')
+RESULTS_FOLDER = os.path.join(PROPAINTER_ROOT, 'results')
 
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs(app.config['VIDEO_FOLDER'], exist_ok=True)
-os.makedirs(app.config['RESULTS_FOLDER'], exist_ok=True)
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(VIDEO_FOLDER, exist_ok=True)
+os.makedirs(RESULTS_FOLDER, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 初始化 SAM 服务 (全局单例，启动时加载)
+# =================================================================
+# FastAPI 应用初始化与配置
+# =================================================================
+app = FastAPI(
+    title="智能视频清洗系统 API",
+    description="提供视频上传、切帧、智能选区、清洗任务调度等全套接口，供外部系统调用对接。",
+    version="1.0.0"
+)
+
+# 配置 CORS跨域
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 挂载静态文件和模板 (保留原有网页界面的功能)
+app.mount("/static", StaticFiles(directory=os.path.join(WEB_DIR, "static")), name="static")
+templates = Jinja2Templates(directory=os.path.join(WEB_DIR, "templates"))
+
+# 初始化 SAM 服务
 SAM_WEIGHT_PATH = os.path.join(PROPAINTER_ROOT, 'weights', 'sam_vit_b_01ec64.pth')
 try:
     sam_service = SAMService(checkpoint_path=SAM_WEIGHT_PATH)
@@ -50,11 +71,38 @@ except Exception as e:
 
 tasks = {}
 
+# =================================================================
+# 定义请求数据模型 (用于自动生成严谨的 Swagger 接口文档)
+# =================================================================
+class ScriptParams(BaseModel):
+    source_video: str = Field(..., description="上传接口返回的视频文件名")
+    mask_file: str = Field(..., description="保存遮罩接口返回的 JSON 文件名")
+    # 可以根据你的需要加入其他非必填参数，如 threshold 等
 
+class TaskCreateRequest(BaseModel):
+    script_params: ScriptParams
+
+class SaveMaskRequest(BaseModel):
+    video_filename: str = Field(..., description="原始视频文件名")
+    mask_data: Dict[str, Any] = Field(..., description="前端绘制生成的遮罩 JSON 结构")
+
+class ExtractFrameRequest(BaseModel):
+    video_filename: str = Field(..., description="视频文件名")
+    timestamp: str = Field(default="00:00:00", description="时间戳，格式 HH:MM:SS")
+
+class AutoSegmentRequest(BaseModel):
+    image_data: str = Field(..., description="视频帧的 base64 字符串")
+    x: int = Field(..., description="点击位置的 X 坐标")
+    y: int = Field(..., description="点击位置的 Y 坐标")
+    box: Optional[List[int]] = Field(default=None, description="大框坐标 [x1, y1, x2, y2]")
+
+# =================================================================
+# 核心任务调度类 (完全保留原有逻辑)
+# =================================================================
 class ProcessingTask:
-    def __init__(self, task_id, script_params):
+    def __init__(self, task_id, script_params_dict):
         self.task_id = task_id
-        self.script_params = script_params
+        self.script_params = script_params_dict
         self.status = "pending"
         self.progress = 0
         self.current_stage = ""
@@ -64,11 +112,9 @@ class ProcessingTask:
         self.thread = None
         self.final_video_path = None
 
-        # 将前端传来的纯文件名，拼接成本地绝对路径
-        self.source_video = os.path.join(app.config['VIDEO_FOLDER'],
-                                         os.path.basename(self.script_params['source_video']))
-        self.mask_file = os.path.join(app.config['UPLOAD_FOLDER'], os.path.basename(self.script_params['mask_file']))
-        self.workspace = app.config['RESULTS_FOLDER']
+        self.source_video = os.path.join(VIDEO_FOLDER, os.path.basename(self.script_params['source_video']))
+        self.mask_file = os.path.join(UPLOAD_FOLDER, os.path.basename(self.script_params['mask_file']))
+        self.workspace = RESULTS_FOLDER
 
         logger.info(f"创建新任务对象: {task_id}")
 
@@ -82,32 +128,28 @@ class ProcessingTask:
     def _run_task(self):
         try:
             self._add_log("准备本地环境，开始处理...")
-
-            # 【这是针对你 5台机器、4显卡 的推荐启动配置】
             cmd = [
                 sys.executable,
                 os.path.join(PROJECT_DIR, 'main_pipeline.py'),
                 '--video', self.source_video,
                 '--mask_json', self.mask_file,
                 '--workspace', self.workspace,
-                '--padding', '150',  # 保持高外扩，防重叠算法会保驾护航
-                '--gpus', '0,1,2,3',  # 明确告诉它使用这 4 张显卡
-                '--scale_delay', '3',  # 稳定处理 3 分钟后，尝试在某张卡上加第二个任务
-                '--cooldown', '10'  # 如果某张卡爆显存，该卡 10 分钟内禁止新增并发
+                '--padding', '150',
+                '--gpus', '0,1,2,3',
+                '--scale_delay', '3',
+                '--cooldown', '10'
             ]
 
             self._add_log(f"执行命令: {' '.join(cmd)}")
 
-            # 使用 Popen 直接在本地运行，替代 SSH
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
-                cwd=PROJECT_DIR  # 切换到 project 目录下执行
+                cwd=PROJECT_DIR
             )
 
-            # 实时读取日志
             while True:
                 line = process.stdout.readline()
                 if line == '' and process.poll() is not None:
@@ -151,7 +193,6 @@ class ProcessingTask:
 
     def _find_final_video(self):
         try:
-            # 去 workspace 找最新的 final_output.mp4
             files = glob.glob(os.path.join(self.workspace, '**', 'final_output.mp4'), recursive=True)
             if files:
                 self.final_video_path = max(files, key=os.path.getmtime)
@@ -165,69 +206,52 @@ class ProcessingTask:
         self.status = "cancelled"
 
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+# =================================================================
+# API 路由接口定义
+# =================================================================
+
+@app.get("/", response_class=HTMLResponse, tags=["页面"])
+async def index(request: Request):
+    """访问系统可视化工作台界面"""
+    return templates.TemplateResponse("index.html", {"request": request})
 
 
-@app.route('/api/tasks', methods=['POST'])
-def create_task():
-    data = request.json
-    task_id = str(uuid.uuid4())
-    # 移除了 server_config，仅传入参数
-    tasks[task_id] = ProcessingTask(task_id, data['script_params'])
-    tasks[task_id].start()
-    return jsonify({'task_id': task_id, 'status': 'started'})
+@app.post("/api/upload", tags=["文件处理"])
+async def upload(file: UploadFile = File(...)):
+    """上传原始视频文件"""
+    # 替换 werkzeug 的 secure_filename
+    fname = "".join(c for c in file.filename if c.isalnum() or c in " ._-")
+    path = os.path.join(VIDEO_FOLDER, fname)
+    with open(path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    return {"filename": fname}
 
 
-@app.route('/api/tasks/<task_id>', methods=['GET'])
-def get_task(task_id):
-    if task_id not in tasks: return jsonify({'error': 'Not found'}), 404
-    t = tasks[task_id]
-    return jsonify({'status': t.status, 'progress': t.progress, 'current_stage': t.current_stage, 'logs': t.logs[-50:],
-                    'final_video_path': t.final_video_path})
-
-
-@app.route('/api/tasks/<task_id>/cancel', methods=['POST'])
-def cancel_task(task_id):
-    if task_id in tasks: tasks[task_id].cancel()
-    return jsonify({'status': 'cancelled'})
-
-
-@app.route('/api/upload', methods=['POST'])
-def upload():
-    f = request.files['file']
-    fname = secure_filename(f.filename)
-    path = os.path.join(app.config['VIDEO_FOLDER'], fname)
-    f.save(path)
-    # 只返回文件名
-    return jsonify({'filename': fname})
-
-
-@app.route('/api/save-mask', methods=['POST'])
-def save_mask_api():
-    data = request.json
-    vname = os.path.splitext(os.path.basename(data.get('video_filename', 'unknown')))[0]
+@app.post("/api/save-mask", tags=["掩码标注"])
+async def save_mask_api(request_data: SaveMaskRequest):
+    """接收前端 JSON 并生成遮罩文件"""
+    vname = os.path.splitext(os.path.basename(request_data.video_filename))[0]
     fname = f"{vname}_mask_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    path = os.path.join(app.config['UPLOAD_FOLDER'], fname)
+    path = os.path.join(UPLOAD_FOLDER, fname)
     with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data['mask_data'], f, indent=2, ensure_ascii=False)
-    # 只返回文件名
-    return jsonify({'mask_filename': fname})
+        json.dump(request_data.mask_data, f, indent=2, ensure_ascii=False)
+    return {"mask_filename": fname}
 
 
-@app.route('/api/extract-frame', methods=['POST'])
-def extract_frame_api():
-    data = request.json
-    vid_filename = data.get('video_filename')
-    vid_path = os.path.join(app.config['VIDEO_FOLDER'], os.path.basename(vid_filename))
+@app.post("/api/extract-frame", tags=["视频截帧"])
+async def extract_frame_api(request_data: ExtractFrameRequest):
+    """根据时间戳提取视频画面，返回 Base64"""
+    vid_path = os.path.join(VIDEO_FOLDER, os.path.basename(request_data.video_filename))
 
     if not os.path.exists(vid_path):
-        return jsonify({'error': 'Video not found'}), 404
+        raise HTTPException(status_code=404, detail="Video not found")
 
-    timestamp = data.get('timestamp', '00:00:00')
-    h, m, s = map(int, timestamp.split(':'))
-    seconds = h * 3600 + m * 60 + s
+    timestamp = request_data.timestamp
+    try:
+        h, m, s = map(int, timestamp.split(':'))
+        seconds = h * 3600 + m * 60 + s
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid timestamp format, expect HH:MM:SS")
 
     cap = cv2.VideoCapture(vid_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -238,47 +262,71 @@ def extract_frame_api():
     if ret:
         _, buf = cv2.imencode('.jpg', frame)
         b64 = base64.b64encode(buf).decode('utf-8')
-        return jsonify({'success': True, 'image_data': f"data:image/jpeg;base64,{b64}"})
-    return jsonify({'error': 'Extract failed'}), 500
+        return {"success": True, "image_data": f"data:image/jpeg;base64,{b64}"}
+    raise HTTPException(status_code=500, detail="Extract failed")
 
 
-@app.route('/api/tasks/<task_id>/download-video', methods=['GET'])
-def download_video(task_id):
-    if task_id not in tasks or not tasks[task_id].final_video_path:
-        return jsonify({'error': 'Not ready'}), 404
-    return send_file(tasks[task_id].final_video_path, as_attachment=True)
-
-
-@app.route('/api/auto-segment', methods=['POST'])
-def auto_segment_api():
+@app.post("/api/auto-segment", tags=["AI 抠图"])
+async def auto_segment_api(request_data: AutoSegmentRequest):
+    """调用 SAM 模型进行智能点选目标分割"""
     if sam_service is None:
-        return jsonify({'error': 'SAM 模型未加载成功'}), 500
-
-    data = request.json
-    b64_img = data.get('image_data')
-    click_x = data.get('x')
-    click_y = data.get('y')
-    box = data.get('box')
-
-    if not b64_img or click_x is None or click_y is None:
-        return jsonify({'error': '缺少必要参数'}), 400
+        raise HTTPException(status_code=500, detail="SAM 模型未加载成功")
 
     try:
-        point_coords = [[click_x, click_y]]
+        point_coords = [[request_data.x, request_data.y]]
         point_labels = [1]
-
         polygon = sam_service.predict_from_b64(
-            b64_img,
-            box=box,
+            request_data.image_data,
+            box=request_data.box,
             point_coords=point_coords,
             point_labels=point_labels
         )
-
-        return jsonify({'success': True, 'polygon': polygon})
+        return {"success": True, "polygon": polygon}
     except Exception as e:
         logger.error(f"SAM 预测出错: {e}")
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8099, debug=True)
+@app.post("/api/tasks", tags=["任务控制"])
+async def create_task(request_data: TaskCreateRequest):
+    """提交参数并启动视频智能清洗算法任务"""
+    task_id = str(uuid.uuid4())
+    # request_data.script_params.dict() 将 Pydantic 对象转回字典
+    tasks[task_id] = ProcessingTask(task_id, request_data.script_params.dict())
+    tasks[task_id].start()
+    return {"task_id": task_id, "status": "started"}
+
+
+@app.get("/api/tasks/{task_id}", tags=["任务控制"])
+async def get_task(task_id: str):
+    """轮询任务当前处理进度与日志"""
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="Task Not found")
+    t = tasks[task_id]
+    return {
+        "status": t.status,
+        "progress": t.progress,
+        "current_stage": t.current_stage,
+        "logs": t.logs[-50:],
+        "final_video_path": t.final_video_path
+    }
+
+
+@app.post("/api/tasks/{task_id}/cancel", tags=["任务控制"])
+async def cancel_task(task_id: str):
+    """强行终止正在进行的清洗任务"""
+    if task_id in tasks:
+        tasks[task_id].cancel()
+    return {"status": "cancelled"}
+
+
+@app.get("/api/tasks/{task_id}/download-video", tags=["文件处理"])
+async def download_video(task_id: str):
+    """下载处理完成后的无水印纯净视频"""
+    if task_id not in tasks or not tasks[task_id].final_video_path:
+        raise HTTPException(status_code=404, detail="Video Not ready")
+    return FileResponse(
+        tasks[task_id].final_video_path,
+        media_type='video/mp4',
+        filename=f"cleaned_video_{task_id[:8]}.mp4"
+    )
