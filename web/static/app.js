@@ -382,7 +382,7 @@ document.getElementById('commit-sam-btn').addEventListener('click', () => {
 // ============== 图层面板管理 =================
 
 function getRegionTypeName(type) {
-    const map = { 'logo': '台标', 'subtitle': '字幕', 'other': '自定义区域' };
+    const map = { 'logo': '台标', 'subtitle': '字幕', 'title': '剧名', 'other': '自定义区域' };
     return map[type] || type;
 }
 
