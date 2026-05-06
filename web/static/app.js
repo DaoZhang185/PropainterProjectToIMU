@@ -8,13 +8,17 @@ let startX, startY;
 let currentRect = null;
 let maskRects = [];
 let boxIdCounter = 0;
-let otherRegionCounter = 0;
 
 let currentVideoFilename = '';
 let uploadedMaskFilename = null;
 
-// 【核心新增】全局保存服务器传回（或前端解析）的视频真实时长
+// 全局视频时长控制
 let globalVideoDuration = 0;
+// 记录当前提取参考画面的时间戳（作为自动追踪的种子）
+let currentExtractTimeStr = "00:00:00";
+
+// 魔法棒(SAM) 多点交互会话状态
+let samSession = { active: false, pos: [], neg: [], polygon: null };
 
 let imageScale = 1;
 let imageOffsetX = 0;
@@ -48,7 +52,6 @@ async function uploadVideo() {
 
     const file = fileInput.files[0];
 
-    // 【核心新增】文件选择后，立刻在前端隐式获取其真实时长
     const videoNode = document.createElement('video');
     videoNode.preload = 'metadata';
     videoNode.onloadedmetadata = function() {
@@ -83,8 +86,11 @@ async function uploadVideo() {
 async function startProcessing() {
     const sourceVideo = document.getElementById('source-video').value;
     if (!sourceVideo) { alert('请设置源视频文件名'); return; }
-    if (maskRects.length > 0 && !uploadedMaskFilename) {
-        if(!confirm('检测到您绘制了Mask但尚未提交同步。直接处理将忽略这些标注。\n是否继续？')) return;
+
+    // 如果有可见图层但没有提交
+    const activeMasks = maskRects.filter(b => b.visible);
+    if (activeMasks.length > 0 && !uploadedMaskFilename) {
+        if(!confirm('检测到您绘制了图层但尚未提交数据。直接处理将忽略这些标注。\n是否继续？')) return;
     }
 
     const scriptParams = { ...FIXED_SCRIPT_PARAMS, source_video: currentVideoFilename, mask_file: uploadedMaskFilename };
@@ -141,14 +147,13 @@ async function extractFrame() {
     const minutes = parseInt(document.getElementById('minutes').value) || 0;
     const seconds = parseInt(document.getElementById('seconds').value) || 0;
 
-    // 【核心新增】越界拦截校验
     const totalSec = hours * 3600 + minutes * 60 + seconds;
     if (globalVideoDuration > 0 && totalSec > globalVideoDuration) {
-        alert(`❌ 提取失败：您设定的提取时间点 (${totalSec}秒) 已超出视频的总时长 (${Math.floor(globalVideoDuration)}秒)！`);
+        alert(`❌ 提取失败：设定的提取时间点 (${totalSec}秒) 已超出视频的总时长 (${Math.floor(globalVideoDuration)}秒)！`);
         return;
     }
 
-    const timestamp = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    currentExtractTimeStr = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 
     const btn = document.getElementById('extract-frame-btn');
     const originalText = btn.innerHTML;
@@ -161,7 +166,7 @@ async function extractFrame() {
         const response = await fetch('/api/extract-frame', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ video_filename: currentVideoFilename, timestamp: timestamp }),
+            body: JSON.stringify({ video_filename: currentVideoFilename, timestamp: currentExtractTimeStr }),
             signal: controller.signal
         });
         clearTimeout(timeoutId);
@@ -170,7 +175,8 @@ async function extractFrame() {
         if (response.ok && result.success) {
             const maskImage = document.getElementById('mask-image');
             const framePlaceholder = document.getElementById('frame-placeholder');
-            resetCanvas();
+
+            // 切换画面不清空图层，确保可以看到之前画的
             framePlaceholder.style.display = 'none';
             maskImage.src = result.image_data;
             maskImage.style.display = 'block';
@@ -181,6 +187,7 @@ async function extractFrame() {
                     calculateImageDisplay(maskImage);
                     initDrawing();
                     toggleDrawingMode(true);
+                    redrawCanvas();
                     resolve();
                 };
                 maskImage.onerror = () => { alert('图片加载失败'); resolve(); };
@@ -236,122 +243,29 @@ function toggleDrawingMode(forceState) {
     if (isDrawingMode) {
         btn.classList.remove('btn-warning'); btn.classList.add('btn-danger');
         btn.innerHTML = '<i class="fas fa-stop me-1"></i>停止绘制';
-        canvas.style.cursor = 'crosshair';
+        if(canvas) canvas.style.cursor = 'crosshair';
     } else {
         btn.classList.remove('btn-danger'); btn.classList.add('btn-warning');
         btn.innerHTML = '<i class="fas fa-pen-nib me-1"></i>进入绘制模式';
-        canvas.style.cursor = 'default';
+        if(canvas) canvas.style.cursor = 'default';
+        // 如果退出了绘制模式但还没确认SAM，自动放弃
+        if (samSession.active) {
+            samSession = { active: false, pos: [], neg: [], polygon: null };
+            document.getElementById('commit-sam-btn').style.display = 'none';
+            redrawCanvas();
+        }
     }
 }
 
-// 【重构】生成绝美的高级三联输入面板，并且绑定 onblur 校验机制
-function addOtherTimeInput(groupId) {
-    const container = document.getElementById('dynamicTimeContainers');
-    const div = document.createElement('div');
-    div.className = 'mt-2 p-2 bg-light border rounded';
-    div.style.borderColor = '#dcdde1';
-    div.id = `time_container_${groupId}`;
-
-    div.innerHTML = `
-        <div class="d-flex justify-content-between align-items-center mb-2">
-            <span class="text-primary fw-bold" style="font-size: 13px;">■ 其他区域${groupId} 生效时效</span>
-        </div>
-        <div class="mb-1"><span class="small text-muted" style="font-size:11px; font-weight:bold;">起始时间:</span></div>
-        <div class="time-input-group mb-2">
-            <div class="time-input-wrapper">
-                <input type="number" class="form-control form-control-sm" id="start_h_${groupId}" min="0" value="0" oninput="redrawCanvas();" onblur="validateTimeRange(${groupId})">
-                <span class="time-input-unit">时</span>
-            </div>
-            <div class="time-separator">:</div>
-            <div class="time-input-wrapper">
-                <input type="number" class="form-control form-control-sm" id="start_m_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas();" onblur="validateTimeRange(${groupId})">
-                <span class="time-input-unit">分</span>
-            </div>
-            <div class="time-separator">:</div>
-            <div class="time-input-wrapper">
-                <input type="number" class="form-control form-control-sm" id="start_s_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas();" onblur="validateTimeRange(${groupId})">
-                <span class="time-input-unit">秒</span>
-            </div>
-        </div>
-        <div class="mb-1 mt-1"><span class="small text-muted" style="font-size:11px; font-weight:bold;">终止时间:</span></div>
-        <div class="time-input-group mb-1">
-            <div class="time-input-wrapper">
-                <input type="number" class="form-control form-control-sm" id="end_h_${groupId}" min="0" value="0" oninput="redrawCanvas();" onblur="validateTimeRange(${groupId})">
-                <span class="time-input-unit">时</span>
-            </div>
-            <div class="time-separator">:</div>
-            <div class="time-input-wrapper">
-                <input type="number" class="form-control form-control-sm" id="end_m_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas();" onblur="validateTimeRange(${groupId})">
-                <span class="time-input-unit">分</span>
-            </div>
-            <div class="time-separator">:</div>
-            <div class="time-input-wrapper">
-                <input type="number" class="form-control form-control-sm" id="end_s_${groupId}" min="0" max="59" value="0" oninput="redrawCanvas();" onblur="validateTimeRange(${groupId})">
-                <span class="time-input-unit">秒</span>
-            </div>
-        </div>
-    `;
-    container.appendChild(div);
-}
-
-// 【核心新增】当用户移出输入框时(blur)，严格校验时长关系
-window.validateTimeRange = function(groupId) {
-    // 1. 获取输入值
-    const sh = parseInt(document.getElementById(`start_h_${groupId}`).value) || 0;
-    const sm = parseInt(document.getElementById(`start_m_${groupId}`).value) || 0;
-    const ss = parseInt(document.getElementById(`start_s_${groupId}`).value) || 0;
-    let eh = parseInt(document.getElementById(`end_h_${groupId}`).value) || 0;
-    let em = parseInt(document.getElementById(`end_m_${groupId}`).value) || 0;
-    let es = parseInt(document.getElementById(`end_s_${groupId}`).value) || 0;
-
-    const startTotal = sh * 3600 + sm * 60 + ss;
-    let endTotal = eh * 3600 + em * 60 + es;
-
-    // 如果都没填，先放过
-    if (startTotal === 0 && endTotal === 0) return;
-
-    // 2. 终止时间越界拦截 & 自动 Clamp 钳制修正
-    if (globalVideoDuration > 0 && endTotal > globalVideoDuration) {
-        endTotal = Math.floor(globalVideoDuration);
-        document.getElementById(`end_h_${groupId}`).value = Math.floor(endTotal / 3600);
-        document.getElementById(`end_m_${groupId}`).value = Math.floor((endTotal % 3600) / 60);
-        document.getElementById(`end_s_${groupId}`).value = endTotal % 60;
-        alert(`温馨提示：终止时间超出了视频总长度，系统已为您自动修正为视频片尾时刻 (${endTotal}秒)。`);
-    }
-
-    // 3. 起始时间越界拦截
-    if (globalVideoDuration > 0 && startTotal >= globalVideoDuration) {
-        alert(`❌ 错误：您的开始时间不能超出视频的总时长 (${Math.floor(globalVideoDuration)}秒)！`);
-    }
-
-    // 4. 逻辑悖论拦截：开始 >= 结束
-    if (startTotal > 0 && endTotal > 0 && startTotal >= endTotal) {
-        alert("❌ 错误：生效的【起始时间】必须严格小于【终止时间】！请重新输入。");
-    }
-
-    // 强制触发画布同步和统计刷新
-    redrawCanvas();
-    updateAnnotationInfo();
-};
-
-function getTimeRangeStr(otherId) {
-    const sh = document.getElementById(`start_h_${otherId}`);
-    const sm = document.getElementById(`start_m_${otherId}`);
-    const ss = document.getElementById(`start_s_${otherId}`);
-    const eh = document.getElementById(`end_h_${otherId}`);
-    const em = document.getElementById(`end_m_${otherId}`);
-    const es = document.getElementById(`end_s_${otherId}`);
-    if (sh && sm && ss && eh && em && es) {
-        return `${sh.value}:${sm.value}:${ss.value}-${eh.value}:${em.value}:${es.value}`;
-    }
-    return "";
-}
+// ============== 核心事件绑定与绘制 =================
 
 function initDrawing() {
     const canvas = document.getElementById('mask-canvas');
     const newCanvas = canvas.cloneNode(true);
     canvas.parentNode.replaceChild(newCanvas, canvas);
-    const ctx = newCanvas.getContext('2d');
+
+    // 禁用默认右键菜单，防止点按Alt等快捷键时的误触
+    newCanvas.addEventListener('contextmenu', e => e.preventDefault());
 
     newCanvas.addEventListener('mousedown', async function(e) {
         if (!isDrawingMode) return;
@@ -363,54 +277,32 @@ function initDrawing() {
         const type = document.getElementById('regionType').value;
         const mode = document.getElementById('drawMode').value;
 
-        if (type === 'other') {
-            if (mode !== 'large' && otherRegionCounter === 0) {
-                alert('请先使用【区域框】(红框) 圈定该"其他区域"的大致范围，系统将为您自动生成对应的时间设置面板！');
-                isDrawingMode = false;
-                toggleDrawingMode(false);
-                return;
-            }
-        }
-
+        // 【新增多点正负向交互】
         if (mode === 'magic') {
-            const btn = document.getElementById('start-drawing-btn');
-            const originalText = btn.innerHTML;
+            samSession.active = true;
+            document.getElementById('commit-sam-btn').style.display = 'block';
 
-            try {
-                btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>正在提交AI运算...';
-                newCanvas.style.cursor = 'wait';
-
-                const realCoords = displayToImageCoordinates(startX, startY);
-                const maskImage = document.getElementById('mask-image');
-
-                const response = await fetch('/api/auto-segment', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image_data: maskImage.src, x: realCoords.x, y: realCoords.y })
-                });
-                const result = await response.json();
-
-                if (response.ok && result.success && result.polygon && result.polygon.length > 0) {
-                    maskRects.push({
-                        id: ++boxIdCounter,
-                        type: type,
-                        mode: mode,
-                        polygon: result.polygon,
-                        otherId: type === 'other' ? otherRegionCounter : null
-                    });
-                    updateAnnotationInfo();
-                    redrawCanvas(newCanvas);
-                } else { alert('未识别到明显对象，请尝试在目标边缘点选'); }
-            } catch (error) { alert('AI推理节点通信失败: ' + error.message); }
-            finally {
-                btn.innerHTML = originalText;
-                newCanvas.style.cursor = 'crosshair';
+            const realCoords = displayToImageCoordinates(startX, startY);
+            if (e.altKey) {
+                samSession.neg.push([realCoords.x, realCoords.y]);
+            } else {
+                samSession.pos.push([realCoords.x, realCoords.y]);
             }
+
+            await triggerSAM(newCanvas);
             return;
         }
 
+        // 普通框选逻辑
         isDrawing = true;
-        currentRect = { id: ++boxIdCounter, x: startX, y: startY, width: 0, height: 0, type: type, mode: mode };
+        currentRect = {
+            id: ++boxIdCounter,
+            x: startX, y: startY,
+            width: 0, height: 0,
+            type: type, mode: mode,
+            visible: true,
+            ref_time: currentExtractTimeStr
+        };
     });
 
     newCanvas.addEventListener('mousemove', function(e) {
@@ -425,51 +317,191 @@ function initDrawing() {
         if (!isDrawing || !currentRect || currentRect.mode === 'magic') return;
         isDrawing = false;
 
+        // 纠正反向拖拽
         if (currentRect.width < 0) { currentRect.x += currentRect.width; currentRect.width = Math.abs(currentRect.width); }
         if (currentRect.height < 0) { currentRect.y += currentRect.height; currentRect.height = Math.abs(currentRect.height); }
 
         if (Math.abs(currentRect.width) > 0 && Math.abs(currentRect.height) > 0) {
-            if (currentRect.type === 'other') {
-                if (currentRect.mode === 'large') {
-                    otherRegionCounter++;
-                    currentRect.otherId = otherRegionCounter;
-                    addOtherTimeInput(otherRegionCounter);
-                } else {
-                    currentRect.otherId = otherRegionCounter;
-                }
-            }
             maskRects.push(currentRect);
-            updateAnnotationInfo();
+            updateLayerPanel();
         }
         currentRect = null;
         redrawCanvas(newCanvas);
     });
 }
 
+// 触发多点SAM预测
+async function triggerSAM(canvas) {
+    canvas.style.cursor = 'wait';
+    try {
+        const maskImage = document.getElementById('mask-image');
+        const response = await fetch('/api/auto-segment', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image_data: maskImage.src,
+                pos_points: samSession.pos,
+                neg_points: samSession.neg
+            })
+        });
+        const result = await response.json();
+
+        if (response.ok && result.success && result.polygon && result.polygon.length > 0) {
+            samSession.polygon = result.polygon;
+        } else {
+            console.warn("SAM无法识别明确对象");
+        }
+        redrawCanvas(canvas);
+    } catch (error) {
+        alert('AI推理节点通信失败: ' + error.message);
+    } finally {
+        canvas.style.cursor = 'crosshair';
+    }
+}
+
+// 确认并提交当前的SAM结果为图层
+document.getElementById('commit-sam-btn').addEventListener('click', () => {
+    if (samSession.polygon) {
+        maskRects.push({
+            id: ++boxIdCounter,
+            type: document.getElementById('regionType').value,
+            mode: 'magic',
+            polygon: samSession.polygon,
+            visible: true,
+            ref_time: currentExtractTimeStr
+        });
+        updateLayerPanel();
+    }
+    // 重置Session
+    samSession = { active: false, pos: [], neg: [], polygon: null };
+    document.getElementById('commit-sam-btn').style.display = 'none';
+    redrawCanvas();
+});
+
+
+// ============== 图层面板管理 =================
+
+function getRegionTypeName(type) {
+    const map = { 'logo': '台标', 'subtitle': '字幕', 'other': '自定义区域' };
+    return map[type] || type;
+}
+
+window.toggleLayer = function(id) {
+    const layer = maskRects.find(b => b.id === id);
+    if (layer) {
+        layer.visible = !layer.visible;
+        redrawCanvas();
+        updateLayerPanel();
+    }
+};
+
+window.deleteLayer = function(id) {
+    maskRects = maskRects.filter(b => b.id !== id);
+    redrawCanvas();
+    updateLayerPanel();
+};
+
+function clearAllBoxes() {
+    if (maskRects.length === 0) return;
+    if (confirm('确定要清空画布上的所有图层吗？')) {
+        maskRects = [];
+        samSession = { active: false, pos: [], neg: [], polygon: null };
+        document.getElementById('commit-sam-btn').style.display = 'none';
+        redrawCanvas();
+        updateLayerPanel();
+    }
+}
+
+function updateLayerPanel() {
+    const panel = document.getElementById('layerPanel');
+    if (maskRects.length === 0) {
+        panel.innerHTML = '<div class="text-muted text-center" style="font-size:11px; margin-top:30px;">暂无图层</div>';
+        return;
+    }
+
+    let html = '';
+    // 倒序渲染，新的在最上面
+    [...maskRects].reverse().forEach(box => {
+        const eyeIcon = box.visible ? 'fa-eye text-primary' : 'fa-eye-slash text-muted';
+        const typeStr = box.mode === 'magic' ? '✨ 智能蒙版' : '🟥 区域红框';
+        // 如果图层被隐藏，加点透明度
+        const opacity = box.visible ? '1' : '0.5';
+
+        html += `
+        <div class="d-flex justify-content-between align-items-center mb-1 pb-1" style="border-bottom:1px solid #f0f0f0; font-size:12px; opacity:${opacity};">
+            <div>
+                <i class="fas ${eyeIcon} me-2" style="cursor:pointer;" onclick="toggleLayer(${box.id})"></i>
+                <span style="font-weight:600; color:var(--dark);">${getRegionTypeName(box.type)}</span>
+                <span style="color:var(--gray-text); margin-left:4px;">${typeStr}</span>
+                <span class="text-muted" style="font-size:10px; margin-left:4px;">(帧: ${box.ref_time})</span>
+            </div>
+            <i class="fas fa-times text-danger" style="cursor:pointer;" onclick="deleteLayer(${box.id})"></i>
+        </div>`;
+    });
+    panel.innerHTML = html;
+}
+
+// ============== 核心绘制逻辑 =================
+
 function redrawCanvas(canvasElement) {
     const canvas = canvasElement || document.getElementById('mask-canvas');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    maskRects.forEach(box => { drawBox(ctx, box); });
-    if (isDrawing && currentRect) { drawBox(ctx, currentRect, true); }
+
+    // 渲染已经保存的图层 (仅渲染可见部分)
+    maskRects.forEach(box => {
+        if (box.visible) drawBox(ctx, box);
+    });
+
+    // 渲染鼠标正在拖拽的框
+    if (isDrawing && currentRect) {
+        drawBox(ctx, currentRect, true);
+    }
+
+    // 渲染处于编辑态的 SAM 会话点和轮廓
+    if (samSession.active) {
+        if (samSession.polygon) {
+            ctx.strokeStyle = '#9b59b6';
+            ctx.lineWidth = 2;
+            ctx.fillStyle = 'rgba(155, 89, 182, 0.4)';
+            ctx.beginPath();
+            samSession.polygon.forEach((pt, index) => {
+                const dispX = pt[0] * imageScale;
+                const dispY = pt[1] * imageScale;
+                if (index === 0) ctx.moveTo(dispX, dispY); else ctx.lineTo(dispX, dispY);
+            });
+            ctx.closePath(); ctx.fill(); ctx.stroke();
+        }
+
+        // 渲染正向特征点 (绿色圆点)
+        ctx.fillStyle = '#2ecc71';
+        samSession.pos.forEach(pt => {
+            ctx.beginPath();
+            ctx.arc(pt[0] * imageScale, pt[1] * imageScale, 4, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.stroke();
+        });
+
+        // 渲染负向特征点 (红色圆点)
+        ctx.fillStyle = '#e74c3c';
+        samSession.neg.forEach(pt => {
+            ctx.beginPath();
+            ctx.arc(pt[0] * imageScale, pt[1] * imageScale, 4, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.stroke();
+        });
+    }
 }
 
 function drawBox(ctx, box, isDashed = false) {
-    let timeStr = "";
-    if (box.type === 'other' && box.otherId) {
-        timeStr = getTimeRangeStr(box.otherId);
-    }
-
     const isLarge = box.mode === 'large';
-    const labelTitle = (box.type === 'other')
-        ? `其他区域${box.otherId} [${timeStr.replace('-', ' 至 ')}]`
-        : `${getRegionTypeName(box.type)}-${box.id}`;
+    const labelTitle = `${getRegionTypeName(box.type)} [L${box.id}]`;
 
     if (box.mode === 'magic' && box.polygon) {
-        ctx.strokeStyle = '#9b59b6';
+        ctx.strokeStyle = '#3498db';
         ctx.lineWidth = 2;
-        ctx.fillStyle = 'rgba(155, 89, 182, 0.35)';
+        ctx.fillStyle = 'rgba(52, 152, 219, 0.3)';
         ctx.beginPath();
         box.polygon.forEach((pt, index) => {
             const dispX = pt[0] * imageScale;
@@ -480,8 +512,8 @@ function drawBox(ctx, box, isDashed = false) {
         return;
     }
 
-    const strokeColor = isLarge ? '#e74c3c' : '#27ae60';
-    const fillColor = isLarge ? 'rgba(231, 76, 60, 0.15)' : 'rgba(39, 174, 96, 0.2)';
+    const strokeColor = '#e74c3c';
+    const fillColor = 'rgba(231, 76, 60, 0.15)';
 
     ctx.strokeStyle = strokeColor;
     ctx.lineWidth = 2;
@@ -502,70 +534,12 @@ function drawBox(ctx, box, isDashed = false) {
     }
 }
 
-function getRegionTypeName(type) {
-    const map = { 'logo': '台标', 'subtitle': '字幕', 'title': '剧名', 'other': '其他区域' };
-    return map[type] || type;
-}
-
-function updateAnnotationInfo() {
-    const details = document.getElementById('annotationDetails');
-    if (maskRects.length === 0) { details.innerHTML = '尚未生成有效标注'; return; }
-
-    const counts = {};
-    maskRects.forEach(box => {
-        let typeKey = box.type;
-        let displayName = getRegionTypeName(box.type);
-
-        if (box.type === 'other') {
-            typeKey = `other_${box.otherId}`;
-            const timeStr = getTimeRangeStr(box.otherId);
-            displayName = `其他区域${box.otherId} [${timeStr.replace('-', ' 至 ')}]`;
-        }
-
-        if (!counts[typeKey]) counts[typeKey] = { name: displayName, large: 0, small: 0, magic: 0 };
-        if (box.mode === 'large') counts[typeKey].large++;
-        else if (box.mode === 'magic') counts[typeKey].magic++;
-        else counts[typeKey].small++;
-    });
-
-    let html = '';
-    Object.keys(counts).forEach(key => {
-        const c = counts[key];
-        html += `<div class="mb-1">
-            <span class="badge" style="background-color: var(--primary); margin-right:4px;">${c.name}</span>
-            <span class="text-danger small fw-bold">红框:${c.large}</span> 
-            ${c.magic > 0 ? `<span class="text-primary small fw-bold" style="margin-left:4px;">魔法棒:${c.magic}</span>` : ''}
-        </div>`;
-    });
-    details.innerHTML = html;
-}
-
-function undoLastBox() {
-    if (maskRects.length > 0) {
-        const removed = maskRects.pop();
-        if (removed.type === 'other' && removed.mode === 'large') {
-            const container = document.getElementById(`time_container_${removed.otherId}`);
-            if (container) container.remove();
-            if (removed.otherId === otherRegionCounter) otherRegionCounter--;
-        }
-        redrawCanvas();
-        updateAnnotationInfo();
-    }
-}
-
-function clearAllBoxes() {
-    if (maskRects.length === 0) return;
-    if (confirm('危险操作：确定要清空画布上所有的标注框吗？')) {
-        maskRects = [];
-        otherRegionCounter = 0;
-        document.getElementById('dynamicTimeContainers').innerHTML = '';
-        redrawCanvas();
-        updateAnnotationInfo();
-    }
-}
+// ============== 数据打包交互 =================
 
 async function generateJSON() {
-    if (maskRects.length === 0) { alert('画布为空，无法生成标注集'); return; }
+    // 【核心】过滤掉小眼睛被关掉的图层
+    const activeMasks = maskRects.filter(b => b.visible);
+    if (activeMasks.length === 0) { alert('当前没有任何可见的图层！无法生成标注集。'); return; }
 
     const maskImage = document.getElementById('mask-image');
     const jsonData = {
@@ -577,43 +551,31 @@ async function generateJSON() {
         regions: {}
     };
 
-    let hasTimeError = false;
-
-    maskRects.forEach(box => {
-        let regionKey = box.type;
-        let typeName = getRegionTypeName(box.type);
-        let timeRange = "";
-
-        if (box.type === 'other') {
-            regionKey = `other_${box.otherId}`;
-            typeName = `其他区域${box.otherId}`;
-            timeRange = getTimeRangeStr(box.otherId);
-            // 提交时进行最终严格校验
-            const parts = timeRange.split('-');
-            if (parts.length !== 2 || parts[0] === "0:0:0" && parts[1] === "0:0:0") {
-                hasTimeError = true;
-            }
-        }
+    activeMasks.forEach(box => {
+        // 防止相同的 other 区域覆盖，每个 other 独立一个 ID
+        let regionKey = box.type === 'other' ? `other_${box.id}` : box.type;
 
         if (!jsonData.regions[regionKey]) {
-            jsonData.regions[regionKey] = { typeName: typeName, largeBoxes: [], smallBoxes: [] };
-            if (box.type === 'other') jsonData.regions[regionKey].timeRange = timeRange;
+            jsonData.regions[regionKey] = {
+                typeName: getRegionTypeName(box.type),
+                reference_time: box.ref_time, // 【核心】将绘制帧的时间戳交给后台用于 AI 追踪
+                largeBoxes: [],
+                smallBoxes: []
+            };
         }
 
         if (box.mode === 'magic') {
             jsonData.regions[regionKey].smallBoxes.push({ id: box.id, polygon: box.polygon });
         } else {
             const realCoords = displayToImageCoordinates(box.x, box.y);
-            const boxData = { id: box.id, x: realCoords.x, y: realCoords.y, width: Math.round(box.width / imageScale), height: Math.round(box.height / imageScale) };
-            if (box.mode === 'large') jsonData.regions[regionKey].largeBoxes.push(boxData);
-            else jsonData.regions[regionKey].smallBoxes.push(boxData);
+            const boxData = {
+                id: box.id,
+                x: realCoords.x, y: realCoords.y,
+                width: Math.round(box.width / imageScale), height: Math.round(box.height / imageScale)
+            };
+            jsonData.regions[regionKey].largeBoxes.push(boxData);
         }
     });
-
-    if (hasTimeError) {
-        alert('上传拦截：您有"其他区域"未设置有效的起止时间。请设定正确的时效再试！');
-        return;
-    }
 
     const btn = document.getElementById('generate-json-btn');
     const originalBtnText = btn.innerHTML;
@@ -630,8 +592,8 @@ async function generateJSON() {
             uploadedMaskFilename = result.mask_filename;
             const statusDiv = document.getElementById('mask-upload-status');
             statusDiv.style.display = 'block';
-            statusDiv.innerHTML = `<i class="fas fa-check-circle me-1"></i>标注集已成功挂载至引擎`;
-            alert(`标注提交成功！可以启动分布式引擎进行清洗了。`);
+            statusDiv.innerHTML = `<i class="fas fa-check-circle me-1"></i>成功同步 ${activeMasks.length} 个可见图层`;
+            alert(`标注提交成功！后台 AI 自动追踪引擎已准备就绪。`);
         } else { throw new Error(result.error || '上传失败'); }
     } catch (error) { alert('云端网络异常: ' + error.message); }
     finally { btn.disabled = false; btn.innerHTML = originalBtnText; }
@@ -641,11 +603,11 @@ function resetCanvas() {
     maskRects = [];
     currentRect = null;
     boxIdCounter = 0;
-    otherRegionCounter = 0;
     uploadedMaskFilename = null;
+    samSession = { active: false, pos: [], neg: [], polygon: null };
 
     document.getElementById('mask-upload-status').style.display = 'none';
-    document.getElementById('dynamicTimeContainers').innerHTML = '';
+    document.getElementById('commit-sam-btn').style.display = 'none';
 
     const maskImage = document.getElementById('mask-image');
     const maskCanvas = document.getElementById('mask-canvas');
@@ -657,7 +619,7 @@ function resetCanvas() {
 
     const btn = document.getElementById('start-drawing-btn');
     if(btn) toggleDrawingMode(false);
-    updateAnnotationInfo();
+    updateLayerPanel();
 }
 
 function startStatusPolling() {
@@ -696,15 +658,13 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('download-video-btn').addEventListener('click', downloadVideo);
     document.getElementById('extract-frame-btn').addEventListener('click', extractFrame);
     document.getElementById('start-drawing-btn').addEventListener('click', () => toggleDrawingMode());
-    document.getElementById('undo-btn').addEventListener('click', undoLastBox);
     document.getElementById('clear-all-btn').addEventListener('click', clearAllBoxes);
     document.getElementById('generate-json-btn').addEventListener('click', generateJSON);
 
     document.getElementById('source-video').addEventListener('change', function() { currentVideoFilename = this.value; });
 
-    const regionSelect = document.getElementById('regionType');
-    const modeSelect = document.getElementById('drawMode');
-
-    regionSelect.value = 'logo'; modeSelect.value = 'large';
-    regionSelect.addEventListener('change', function() { modeSelect.value = 'large'; });
+    const drawModeSelect = document.getElementById('drawMode');
+    drawModeSelect.addEventListener('change', function() {
+        document.getElementById('magic-hint').style.display = this.value === 'magic' ? 'block' : 'none';
+    });
 });

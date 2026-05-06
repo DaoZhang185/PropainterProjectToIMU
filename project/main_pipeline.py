@@ -137,6 +137,67 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080, time_ranges
     return boxes
 
 
+# 【核心新增】AI 时轴自动追踪器
+def auto_track_regions(all_poses, reference_times, frames_dir, frame_files, fps):
+    time_ranges = {}
+    print("\n[AutoTracker] 正在全景扫描动态掩码生效时间段...")
+    for key, coords in all_poses.items():
+        if key in reference_times and key != '2':  # 字幕一般不追踪，通常是全局或特定区域
+            ref_time = reference_times[key]
+            ref_frame_idx = max(0, min(int(ref_time * fps), len(frame_files) - 1))
+            ref_img = cv2.imread(os.path.join(frames_dir, frame_files[ref_frame_idx]), cv2.IMREAD_GRAYSCALE)
+
+            if ref_img is None: continue
+
+            # 获取该特征区域的外接包围盒
+            all_x, all_y = [], []
+            for item in coords:
+                if len(item) == 4 and isinstance(item[0], (int, float)):
+                    all_x.extend([item[0], item[2]]);
+                    all_y.extend([item[1], item[3]])
+                elif isinstance(item, list):
+                    pts = np.array(item)
+                    all_x.extend(pts[:, 0]);
+                    all_y.extend(pts[:, 1])
+
+            if not all_x: continue
+            x1, y1 = max(0, int(min(all_x))), max(0, int(min(all_y)))
+            x2, y2 = min(ref_img.shape[1], int(max(all_x))), min(ref_img.shape[0], int(max(all_y)))
+
+            template = ref_img[y1:y2, x1:x2]
+            if template.size == 0 or template.shape[0] < 5 or template.shape[1] < 5: continue
+
+            # 提取边缘特征抗干扰
+            template_edges = cv2.Canny(template, 50, 150)
+
+            active_frames = []
+            for i, f_name in enumerate(frame_files):
+                img = cv2.imread(os.path.join(frames_dir, f_name), cv2.IMREAD_GRAYSCALE)
+                if img is None: continue
+                roi = img[y1:y2, x1:x2]
+                roi_edges = cv2.Canny(roi, 50, 150)
+
+                # 边缘差异计算
+                score = np.mean(cv2.absdiff(template_edges, roi_edges))
+                if score < 20.0:  # 高度相似
+                    active_frames.append(i)
+
+            # 汇聚离散帧，生成时间段 [[start1, end1], [start2, end2]]
+            ranges = []
+            if active_frames:
+                start = active_frames[0]
+                prev = active_frames[0]
+                for idx in active_frames[1:]:
+                    if idx - prev > int(fps * 1.5):  # 允许 1.5秒以内的闪烁容错
+                        ranges.append([start / fps, prev / fps])
+                        start = idx
+                    prev = idx
+                ranges.append([start / fps, prev / fps])
+            time_ranges[key] = ranges
+            print(
+                f"    ✓ {key} 自动检出 {len(ranges)} 个生效时段: {[[round(r[0], 1), round(r[1], 1)] for r in ranges]}")
+    return time_ranges
+
 def crop_worker(args):
     src, dst, coords = args
     img = cv2.imread(src)
@@ -243,8 +304,13 @@ def main():
 
     img_h, img_w = cv2.imread(os.path.join(frames_dir, frame_files[0])).shape[:2]
 
-    all_poses, time_ranges = load_poses_from_json(args.mask_json)
+    # 【修改调用方式】
+    all_poses, reference_times = load_poses_from_json(args.mask_json)
     if not all_poses: sys.exit(1)
+
+    # 【核心调用】激活 AI 全域追踪器，生成时间段
+    time_ranges = auto_track_regions(all_poses, reference_times, frames_dir, frame_files, fps)
+
     work_plans = resolve_overlaps(all_poses, padding=args.padding, img_w=img_w, img_h=img_h, time_ranges=time_ranges)
 
     global_task_queue = queue.Queue()

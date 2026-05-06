@@ -37,12 +37,16 @@ def process_single_frame_mask(img_path, local_poses, output_dir, time_ranges, fp
     frame_idx = int(m_idx.group()) if m_idx else -1
 
     for key, coords in local_poses.items():
-        # 【完美时间囊括算法】开始时间向下取整(提前触发)，结束时间向上取整(延后结束)
-        if key in time_ranges:
-            start_sec, end_sec = time_ranges[key]
-            start_f = math.floor(start_sec * fps)
-            end_f = math.ceil(end_sec * fps)
-            if not (start_f <= frame_idx <= end_f):
+        # 【完美支持多段分散时间段判定】
+        if key in time_ranges and time_ranges[key]:
+            ranges = time_ranges[key]
+            is_in_range = False
+            for r in ranges:
+                # r 是一个子列表: [start_sec, end_sec]
+                if math.floor(r[0] * fps) <= frame_idx <= math.ceil(r[1] * fps):
+                    is_in_range = True
+                    break
+            if not is_in_range:
                 continue
 
         is_solid = (key != '2')

@@ -8,7 +8,6 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         :root {
-            /* 采用奥云AI同款的高亮商务蓝与扁平化色彩体系 */
             --primary: #3b5eff;
             --primary-hover: #5c7aff;
             --success: #13ce66;
@@ -16,12 +15,11 @@
             --danger: #ff4949;
             --dark: #303133;
             --gray-text: #909399;
-            --light-bg: #f5f7fa; /* 极简浅灰背景 */
+            --light-bg: #f5f7fa;
             --border-color: #e4e7ed;
         }
 
         body {
-            /* 替换原有的渐变色，使用高级的极简浅灰 */
             background: var(--light-bg);
             min-height: 100vh;
             font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
@@ -38,7 +36,6 @@
             flex-direction: column;
         }
 
-        /* 顶部导航栏白底+底边框 */
         .navbar {
             background: #ffffff !important;
             border-bottom: 1px solid var(--border-color);
@@ -55,7 +52,7 @@
         }
 
         .btn {
-            border-radius: 4px; /* 扁平化圆角 */
+            border-radius: 4px;
             font-weight: 500;
             padding: 8px 12px;
             font-size: 13px;
@@ -87,7 +84,7 @@
 
         .form-control:focus, .form-select:focus {
             border-color: var(--primary);
-            box-shadow: none; /* 去除光晕，保持边框高亮 */
+            box-shadow: none;
         }
 
         .form-label {
@@ -105,18 +102,17 @@
         }
 
         .progress-bar {
-            background: var(--primary); /* 纯色扁平化 */
+            background: var(--primary);
             border-radius: 6px;
             transition: width 0.4s ease;
             font-weight: 500;
             font-size: 10px;
         }
 
-        /* 工作区布局重构：卡片悬浮风格 */
         .main-content {
             display: flex;
             flex: 1;
-            gap: 16px; /* 两块白色卡片之间的间距 */
+            gap: 16px;
             padding: 16px 24px;
             height: calc(100vh - 60px);
             overflow: hidden;
@@ -128,7 +124,7 @@
             background: #ffffff;
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            box-shadow: 0 2px 12px 0 rgba(0,0,0,0.05); /* 柔和阴影 */
+            box-shadow: 0 2px 12px 0 rgba(0,0,0,0.05);
             display: flex;
             flex-direction: column;
             overflow-y: auto;
@@ -194,7 +190,6 @@
             display: block;
         }
 
-        /* 时分秒框 UI 完美居中对齐 */
         .time-input-group {
             display: flex;
             gap: 6px;
@@ -269,15 +264,6 @@
             border-radius: 1.5px;
         }
 
-        #annotationInfo {
-            font-size: 12px;
-            background: #fdfdfd;
-            padding: 12px;
-            border-radius: 4px;
-            margin-top: 12px;
-            border: 1px solid var(--border-color);
-        }
-
         #mask-upload-status {
             font-size: 12px;
             color: var(--success);
@@ -289,6 +275,10 @@
             display: none;
             border: 1px solid #e1f3d8;
         }
+
+        /* 自定义滚动条用于图层面板 */
+        #layerPanel::-webkit-scrollbar { width: 4px; }
+        #layerPanel::-webkit-scrollbar-thumb { background: #dcdde1; border-radius: 2px; }
     </style>
 </head>
 <body>
@@ -296,7 +286,7 @@
         <nav class="navbar">
             <div class="container-fluid d-flex justify-content-between align-items-center">
                 <a class="navbar-brand d-flex align-items-center" href="#">
-                    <span style="font-weight: 900; letter-spacing: 1px;">视频智能清洗平台</span>
+                    <span style="font-weight: 900; letter-spacing: 1px;">视频智能清洗平台 (Pro版)</span>
                 </a>
                 <button class="btn btn-outline-primary btn-sm" style="width: auto; margin-bottom: 0; padding: 6px 16px; border-radius: 16px;" data-bs-toggle="modal" data-bs-target="#helpModal">
                     <i class="fas fa-book-open me-1"></i>操作手册
@@ -352,50 +342,48 @@
                     <label class="form-label text-muted" style="font-weight: 400; font-size: 12px;">目标区域定义</label>
                     <div class="mb-2">
                         <select id="regionType" class="form-select">
-                            <option value="logo">台标区域 (全局)</option>
-                            <option value="subtitle">字幕区域 (全局)</option>
-                            <option value="title">剧名区域 (全局)</option>
-                            <option value="other">其他区域 (限时出现)</option>
+                            <option value="logo">台标区域 (全局生效)</option>
+                            <option value="subtitle">字幕区域 (全局生效)</option>
+                            <option value="other">自定义区域 (AI 自动全域追踪)</option>
                         </select>
-                        <div id="dynamicTimeContainers" style="margin-top: 8px;"></div>
                     </div>
                     <div>
                         <select id="drawMode" class="form-select">
-                            <option value="large">区域框 (红色-整体定位)</option>
-                            <option value="small" style="display: none;">目标框 (绿色-细节剔除)</option>
-                            <option value="magic">🌟 魔法棒 (AI智能点选)</option>
+                            <option value="large">区域框 (红色-范围定位)</option>
+                            <option value="magic">🌟 魔法棒 (支持正负样本微调)</option>
                         </select>
                     </div>
+                </div>
+
+                <div class="mb-2" id="magic-hint" style="display:none; font-size:11px; color:#e6a23c; background:#fdf6ec; padding:8px; border-radius:4px;">
+                    <strong>魔法秘籍：</strong>左键选择主体，<kbd>Alt</kbd>+左键 排除背景。<br>完成后请点击下方确认抠图。
                 </div>
 
                 <div class="mb-2">
                     <button class="btn btn-warning" id="start-drawing-btn">
                         <i class="fas fa-pen-nib me-1"></i>进入绘制模式
                     </button>
-                    <div class="row g-2 mt-1">
-                        <div class="col-6">
-                            <button class="btn btn-secondary" id="undo-btn">
-                                <i class="fas fa-rotate-left me-1"></i>撤销
-                            </button>
-                        </div>
-                        <div class="col-6">
-                            <button class="btn btn-danger" id="clear-all-btn">
-                                <i class="fas fa-trash-can me-1"></i>清空
-                            </button>
-                        </div>
-                    </div>
+                    <button class="btn btn-success" id="commit-sam-btn" style="display:none;">
+                        <i class="fas fa-check-double me-1"></i>确认当前抠图
+                    </button>
                 </div>
+
+                <div class="control-divider"></div>
+
+                <div class="section-title">图层面板 (独立时空)</div>
+                <div id="layerPanel" style="background: #fdfdfd; border: 1px solid var(--border-color); border-radius: 4px; padding: 8px; min-height: 100px; max-height: 200px; overflow-y: auto;">
+                    <div class="text-muted text-center" style="font-size: 11px; margin-top: 30px;">暂无图层</div>
+                </div>
+
+                <button class="btn btn-danger py-2 mt-2" id="clear-all-btn">
+                    <i class="fas fa-trash-can me-1"></i>清空所有图层
+                </button>
 
                 <button class="btn btn-success py-2 mt-3" id="generate-json-btn">
                     <i class="fas fa-paper-plane me-1"></i>提交标注数据
                 </button>
                 <div id="mask-upload-status">
                     <i class="fas fa-check-circle me-1"></i>标注数据已同步至引擎
-                </div>
-
-                <div id="annotationInfo">
-                    <strong style="color: var(--dark); font-weight: 600;">标注统计面板：</strong>
-                    <div id="annotationDetails" class="mt-2 text-muted" style="font-size: 11px;">尚未生成有效标注</div>
                 </div>
 
                 <div class="control-divider"></div>
@@ -454,18 +442,18 @@
                 </div>
                 <div class="modal-body p-4">
                     <h6 class="fw-bold" style="color: var(--primary);">1. 资源准备</h6>
-                    <p class="text-muted" style="font-size: 13px;">选择本地视频文件并上传至云端服务器。系统将在上传完成后自动获取视频总时长以供校验。</p>
+                    <p class="text-muted" style="font-size: 13px;">上传视频后，系统自动校验时长与帧率信息。</p>
 
                     <h6 class="fw-bold mt-4" style="color: var(--primary);">2. 掩码 (Mask) 制作规范</h6>
                     <ol class="text-muted" style="font-size: 13px; line-height: 1.8;">
-                        <li class="mb-1">在左侧面板输入时间，点击<strong>提取视频画面</strong>。如果输入时间超出视频长度，系统会智能拦截。</li>
-                        <li class="mb-1"><strong>限时水印处理：</strong>如果选择“其他区域”，请务必先画一个红色大框。画完后系统会自动生成时效控制面板，并严格校验您输入的起止时间。</li>
-                        <li class="mb-1"><strong>智能抠图：</strong>推荐使用 🌟魔法棒 点选目标，系统会自动沿用当前大框的归属及时间属性。</li>
-                        <li>绘制完成后，务必点击<strong>提交标注数据</strong>，将参数同步至推理引擎。</li>
+                        <li class="mb-1"><strong>多图层管理：</strong>每个画的框或扣的图都会生成一个独立的“图层”，您可以在左侧面板控制它是否参与最终运算。</li>
+                        <li class="mb-1"><strong>自定义区域追踪：</strong>选择"自定义区域"并画框后，您无需指定起止时间，AI 会在全视频自动寻找并只在它出现的时间段内进行擦除！</li>
+                        <li class="mb-1"><strong>高级魔法棒：</strong>选择魔法棒后，<kbd>左键</kbd>点击目标物体获取正向特征，<kbd>Alt + 左键</kbd>点击不要的背景进行负向排除。</li>
+                        <li>绘制完成后，务必点击<strong>提交标注数据</strong>。</li>
                     </ol>
 
                     <h6 class="fw-bold mt-4" style="color: var(--primary);">3. 启动分布式引擎</h6>
-                    <p class="text-muted" style="font-size: 13px;">点击<strong>启动清洗</strong>。系统将启用 AIMD 拥塞控制算法，智能调度集群算力并自动跳过无水印时间段。完成后即可下载纯净视频。</p>
+                    <p class="text-muted" style="font-size: 13px;">点击<strong>启动清洗</strong>。系统会自动对重叠时空的图层进行算力合并优化，完成后即可下载纯净视频。</p>
                 </div>
             </div>
         </div>

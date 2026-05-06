@@ -92,10 +92,9 @@ class ExtractFrameRequest(BaseModel):
 
 class AutoSegmentRequest(BaseModel):
     image_data: str = Field(..., description="视频帧的 base64 字符串")
-    x: int = Field(..., description="点击位置的 X 坐标")
-    y: int = Field(..., description="点击位置的 Y 坐标")
+    pos_points: List[List[int]] = Field(default_factory=list, description="正向点选坐标列表 (想要选中的区域)")
+    neg_points: List[List[int]] = Field(default_factory=list, description="负向点选坐标列表 (想排除的区域)")
     box: Optional[List[int]] = Field(default=None, description="大框坐标 [x1, y1, x2, y2]")
-
 # =================================================================
 # 核心任务调度类 (完全保留原有逻辑)
 # =================================================================
@@ -268,13 +267,18 @@ async def extract_frame_api(request_data: ExtractFrameRequest):
 
 @app.post("/api/auto-segment", tags=["AI 抠图"])
 async def auto_segment_api(request_data: AutoSegmentRequest):
-    """调用 SAM 模型进行智能点选目标分割"""
+    """调用 SAM 模型进行智能点选目标分割 (支持正负向多点)"""
     if sam_service is None:
         raise HTTPException(status_code=500, detail="SAM 模型未加载成功")
 
     try:
-        point_coords = [[request_data.x, request_data.y]]
-        point_labels = [1]
+        # 合并正负向点，并分配标签 (1为正，0为负)
+        point_coords = request_data.pos_points + request_data.neg_points
+        point_labels = [1] * len(request_data.pos_points) + [0] * len(request_data.neg_points)
+
+        if not point_coords:
+            raise HTTPException(status_code=400, detail="未提供任何交互点")
+
         polygon = sam_service.predict_from_b64(
             request_data.image_data,
             box=request_data.box,
