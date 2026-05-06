@@ -216,12 +216,12 @@ async def index(request: Request):
 
 
 @app.post("/api/upload", tags=["文件处理"])
-async def upload(file: UploadFile = File(...)):
+def upload(file: UploadFile = File(...)):
     """上传原始视频文件"""
-    # 替换 werkzeug 的 secure_filename
     fname = "".join(c for c in file.filename if c.isalnum() or c in " ._-")
     path = os.path.join(VIDEO_FOLDER, fname)
     with open(path, "wb") as buffer:
+        import shutil
         shutil.copyfileobj(file.file, buffer)
     return {"filename": fname}
 
