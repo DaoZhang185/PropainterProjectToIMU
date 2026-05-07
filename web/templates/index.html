@@ -66,7 +66,6 @@
         .btn-primary:hover { background: var(--primary-hover); color: white; }
         .btn-outline-primary { color: var(--primary); border: 1px solid var(--primary); background: transparent; }
         .btn-outline-primary:hover { background: var(--primary); color: white; border-color: var(--primary); }
-
         .btn-success { background: var(--success); color: white; }
         .btn-warning { background: var(--warning); color: white; }
         .btn-danger { background: var(--danger); color: white; }
@@ -264,6 +263,15 @@
             border-radius: 1.5px;
         }
 
+        #annotationInfo {
+            font-size: 12px;
+            background: #fdfdfd;
+            padding: 12px;
+            border-radius: 4px;
+            margin-top: 12px;
+            border: 1px solid var(--border-color);
+        }
+
         #mask-upload-status {
             font-size: 12px;
             color: var(--success);
@@ -287,9 +295,6 @@
                 <a class="navbar-brand d-flex align-items-center" href="#">
                     <span style="font-weight: 900; letter-spacing: 1px;">视频智能清洗平台 (Pro版)</span>
                 </a>
-                <button class="btn btn-outline-primary btn-sm" style="width: auto; margin-bottom: 0; padding: 6px 16px; border-radius: 16px;" data-bs-toggle="modal" data-bs-target="#helpModal">
-                    <i class="fas fa-book-open me-1"></i>操作手册
-                </button>
             </div>
         </nav>
 
@@ -341,10 +346,10 @@
                     <label class="form-label text-muted" style="font-weight: 400; font-size: 12px;">目标区域定义</label>
                     <div class="mb-2">
                         <select id="regionType" class="form-select">
-                            <option value="logo">台标区域 (全局生效)</option>
-                            <option value="title">剧名区域 (全局生效)</option>
-                            <option value="subtitle">字幕区域 (全局生效)</option>
-                            <option value="other">自定义区域 (AI 自动追踪)</option>
+                            <option value="logo">台标区域</option>
+                            <option value="subtitle">字幕区域</option>
+                            <option value="title">剧名区域</option>
+                            <option value="other">自定义区域 (AI后台自动追踪全时段)</option>
                         </select>
                     </div>
                     <div class="mb-2">
@@ -355,8 +360,9 @@
                     </div>
                     <div class="mb-2" id="magic-mode-container" style="display:none;">
                         <select id="extractMode" class="form-select" style="background-color: #fdf6ec; border-color: #f3d19e;">
-                            <option value="semantic">默认: 语义识别 (适合彩色框/主体)</option>
-                            <option value="color">精准: 色彩提纯 (适合纯白文字抠图)</option>
+                            <option value="solid">实心整体覆盖 (默认SAM)</option>
+                            <option value="hollow">仅提取空心边框 (彩色外框)</option>
+                            <option value="text">仅提纯单色文字 (剔除底色与外框)</option>
                         </select>
                     </div>
                 </div>
@@ -371,13 +377,13 @@
                     </button>
                     <div class="row g-2 mt-1">
                         <div class="col-6">
-                            <button class="btn btn-secondary" id="undo-sam-btn" style="display:none;">
-                                <i class="fas fa-rotate-left me-1"></i>撤销点击
+                            <button class="btn btn-secondary" id="undo-btn" style="display:none;">
+                                <i class="fas fa-rotate-left me-1"></i>撤销
                             </button>
                         </div>
                         <div class="col-6">
-                            <button class="btn btn-success" id="commit-sam-btn" style="display:none;">
-                                <i class="fas fa-check-double me-1"></i>确认抠图
+                            <button class="btn btn-danger" id="clear-all-btn">
+                                <i class="fas fa-trash-can me-1"></i>清空
                             </button>
                         </div>
                     </div>
@@ -390,9 +396,9 @@
                     <div class="text-muted text-center" style="font-size: 11px; margin-top: 30px;">暂无图层</div>
                 </div>
 
-                <button class="btn btn-danger py-2 mt-2" id="clear-all-btn">
-                    <i class="fas fa-trash-can me-1"></i>清空所有图层
-                </button>
+                <div id="annotationInfo" style="display:none;">
+                    <div id="annotationDetails"></div>
+                </div>
 
                 <button class="btn btn-success py-2 mt-3" id="generate-json-btn">
                     <i class="fas fa-paper-plane me-1"></i>提交标注数据
@@ -449,6 +455,6 @@
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/js/bootstrap.bundle.min.js"></script>
-    <script src="{{ url_for('static', path='app.js') }}?v=3.0"></script>
+    <script src="{{ url_for('static', path='app.js') }}?v=4.0"></script>
 </body>
 </html>

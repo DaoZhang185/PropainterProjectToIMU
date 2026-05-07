@@ -1,19 +1,22 @@
 let currentTaskId = null;
 let statusInterval = null;
 
+// Mask制作相关变量
 let isDrawingMode = false;
 let isDrawing = false;
 let startX, startY;
 let currentRect = null;
 let maskRects = [];
 let boxIdCounter = 0;
+// 其他区域直接自增 ID，不再关联时间面板
+let otherRegionCounter = 0;
 
 let currentVideoFilename = '';
 let uploadedMaskFilename = null;
+
 let globalVideoDuration = 0;
 let currentExtractTimeStr = "00:00:00";
 
-// 支持撤销的状态机，改名为 polygons 以接收矩阵
 let samSession = { active: false, pos: [], neg: [], polygons: null, history: [] };
 
 let imageScale = 1;
@@ -39,6 +42,14 @@ async function uploadVideo() {
     if (!fileInput.files[0]) { alert('请选择要上传的视频文件'); return; }
 
     const file = fileInput.files[0];
+    const videoNode = document.createElement('video');
+    videoNode.preload = 'metadata';
+    videoNode.onloadedmetadata = function() {
+        globalVideoDuration = videoNode.duration;
+        window.URL.revokeObjectURL(videoNode.src);
+    };
+    videoNode.src = URL.createObjectURL(file);
+
     const formData = new FormData();
     formData.append('file', file);
 
@@ -52,14 +63,10 @@ async function uploadVideo() {
         if (response.ok) {
             document.getElementById('source-video').value = result.filename;
             currentVideoFilename = result.filename;
-            alert(`视频上传成功！`);
+            alert(`视频上传成功！\n系统检测到该视频总长为: ${Math.floor(globalVideoDuration)} 秒`);
         } else { alert('上传失败: ' + result.error); }
-    } catch (error) {
-        alert('上传错误: ' + error.message);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = originalText;
-    }
+    } catch (error) { alert('上传错误: ' + error.message); }
+    finally { btn.disabled = false; btn.innerHTML = originalText; }
 }
 
 async function startProcessing() {
@@ -74,8 +81,7 @@ async function startProcessing() {
     const scriptParams = { ...FIXED_SCRIPT_PARAMS, source_video: currentVideoFilename, mask_file: uploadedMaskFilename };
     try {
         const response = await fetch('/api/tasks', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ script_params: scriptParams })
         });
         const result = await response.json();
@@ -90,10 +96,7 @@ async function startProcessing() {
 
 async function cancelProcessing() {
     if (!currentTaskId) return;
-    try {
-        await fetch(`/api/tasks/${currentTaskId}/cancel`, { method: 'POST' });
-        document.getElementById('cancel-btn').disabled = true;
-    } catch (error) {}
+    try { await fetch(`/api/tasks/${currentTaskId}/cancel`, { method: 'POST' }); document.getElementById('cancel-btn').disabled = true; } catch (error) {}
 }
 
 async function downloadVideo() {
@@ -101,21 +104,25 @@ async function downloadVideo() {
     try {
         const response = await fetch(`/api/tasks/${currentTaskId}/download-video`);
         if (response.ok) {
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = '处理后纯净视频.mp4';
-            document.body.appendChild(a); a.click();
-            window.URL.revokeObjectURL(url); document.body.removeChild(a);
+            const blob = await response.blob(); const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = '处理后纯净视频.mp4';
+            document.body.appendChild(a); a.click(); window.URL.revokeObjectURL(url); document.body.removeChild(a);
         }
     } catch (error) {}
 }
 
 async function extractFrame() {
-    if (!currentVideoFilename) { alert('请先选择视频'); return; }
+    if (!currentVideoFilename) { alert('请先选择或上传视频'); return; }
     const hours = parseInt(document.getElementById('hours').value) || 0;
     const minutes = parseInt(document.getElementById('minutes').value) || 0;
     const seconds = parseInt(document.getElementById('seconds').value) || 0;
+
+    const totalSec = hours * 3600 + minutes * 60 + seconds;
+    if (globalVideoDuration > 0 && totalSec > globalVideoDuration) {
+        alert(`❌ 提取失败：设定的提取时间点 (${totalSec}秒) 已超出视频的总时长 (${Math.floor(globalVideoDuration)}秒)！`);
+        return;
+    }
+
     currentExtractTimeStr = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 
     const btn = document.getElementById('extract-frame-btn');
@@ -133,10 +140,7 @@ async function extractFrame() {
             maskImage.src = result.image_data;
             maskImage.style.display = 'block'; maskImage.classList.add('active');
             await new Promise((resolve) => {
-                maskImage.onload = function() {
-                    calculateImageDisplay(maskImage);
-                    initDrawing(); toggleDrawingMode(true); redrawCanvas(); resolve();
-                };
+                maskImage.onload = function() { calculateImageDisplay(maskImage); initDrawing(); toggleDrawingMode(true); resolve(); };
             });
         }
     } catch (error) {} finally { btn.disabled = false; btn.innerHTML = originalText; }
@@ -152,7 +156,6 @@ function calculateImageDisplay(maskImage) {
 
     maskImage.style.width = `${dw}px`; maskImage.style.height = `${dh}px`;
     maskImage.style.left = `${imageOffsetX}px`; maskImage.style.top = `${imageOffsetY}px`;
-
     const maskCanvas = document.getElementById('mask-canvas');
     maskCanvas.style.width = `${dw}px`; maskCanvas.style.height = `${dh}px`;
     maskCanvas.style.left = `${imageOffsetX}px`; maskCanvas.style.top = `${imageOffsetY}px`;
@@ -170,14 +173,16 @@ function toggleDrawingMode(forceState) {
     isDrawingMode = forceState !== undefined ? forceState : !isDrawingMode;
     if (isDrawingMode) {
         btn.classList.replace('btn-warning', 'btn-danger'); btn.innerHTML = '<i class="fas fa-stop me-1"></i>停止绘制';
+        document.getElementById('undo-btn').style.display = 'block';
         if(canvas) canvas.style.cursor = 'crosshair';
     } else {
         btn.classList.replace('btn-danger', 'btn-warning'); btn.innerHTML = '<i class="fas fa-pen-nib me-1"></i>进入绘制模式';
+        document.getElementById('undo-btn').style.display = 'none';
         if(canvas) canvas.style.cursor = 'default';
         if (samSession.active) {
             samSession = { active: false, pos: [], neg: [], polygons: null, history: [] };
             document.getElementById('commit-sam-btn').style.display = 'none';
-            document.getElementById('undo-sam-btn').style.display = 'none';
+            document.getElementById('undo-btn').innerHTML = '<i class="fas fa-rotate-left me-1"></i>撤销';
             redrawCanvas();
         }
     }
@@ -199,13 +204,15 @@ function initDrawing() {
         if (mode === 'magic') {
             samSession.active = true;
             document.getElementById('commit-sam-btn').style.display = 'block';
-            document.getElementById('undo-sam-btn').style.display = 'block';
+            document.getElementById('undo-btn').innerHTML = '<i class="fas fa-rotate-left me-1"></i>撤销点击';
+
             const realCoords = displayToImageCoordinates(startX, startY);
             if (e.altKey) { samSession.neg.push([realCoords.x, realCoords.y]); samSession.history.push('neg'); }
             else { samSession.pos.push([realCoords.x, realCoords.y]); samSession.history.push('pos'); }
             await triggerSAM(newCanvas);
             return;
         }
+
         isDrawing = true;
         currentRect = { id: ++boxIdCounter, x: startX, y: startY, width: 0, height: 0, type: type, mode: mode, visible: true, ref_time: currentExtractTimeStr };
     });
@@ -213,8 +220,7 @@ function initDrawing() {
     newCanvas.addEventListener('mousemove', function(e) {
         if (!isDrawing || !currentRect || currentRect.mode === 'magic') return;
         const rect = newCanvas.getBoundingClientRect();
-        currentRect.width = (e.clientX - rect.left) - startX;
-        currentRect.height = (e.clientY - rect.top) - startY;
+        currentRect.width = (e.clientX - rect.left) - startX; currentRect.height = (e.clientY - rect.top) - startY;
         redrawCanvas(newCanvas);
     });
 
@@ -224,20 +230,30 @@ function initDrawing() {
         if (currentRect.width < 0) { currentRect.x += currentRect.width; currentRect.width = Math.abs(currentRect.width); }
         if (currentRect.height < 0) { currentRect.y += currentRect.height; currentRect.height = Math.abs(currentRect.height); }
         if (currentRect.width > 0 && currentRect.height > 0) {
-            maskRects.push(currentRect); updateLayerPanel();
+            if (currentRect.type === 'other') {
+                otherRegionCounter++; currentRect.otherId = otherRegionCounter;
+            }
+            maskRects.push(currentRect);
+            updateLayerPanel();
         }
         currentRect = null; redrawCanvas(newCanvas);
     });
 }
 
-document.getElementById('undo-sam-btn').addEventListener('click', async () => {
-    if (samSession.history.length > 0) {
-        const lastType = samSession.history.pop();
-        if (lastType === 'pos') samSession.pos.pop(); else samSession.neg.pop();
-        if (samSession.pos.length === 0 && samSession.neg.length === 0) {
-            samSession.polygons = null; redrawCanvas();
-        } else {
-            await triggerSAM(document.getElementById('mask-canvas'));
+document.getElementById('undo-btn').addEventListener('click', async () => {
+    if (samSession.active) {
+        if (samSession.history.length > 0) {
+            const lastType = samSession.history.pop();
+            if (lastType === 'pos') samSession.pos.pop(); else samSession.neg.pop();
+            if (samSession.pos.length === 0 && samSession.neg.length === 0) {
+                samSession.polygons = null; redrawCanvas();
+            } else { await triggerSAM(document.getElementById('mask-canvas')); }
+        }
+    } else {
+        if (maskRects.length > 0) {
+            const removed = maskRects.pop();
+            if (removed.type === 'other' && removed.otherId === otherRegionCounter) otherRegionCounter--;
+            redrawCanvas(); updateLayerPanel();
         }
     }
 });
@@ -253,7 +269,6 @@ async function triggerSAM(canvas) {
             body: JSON.stringify({ image_data: maskImage.src, pos_points: samSession.pos, neg_points: samSession.neg, extract_mode: extractMode })
         });
         const result = await response.json();
-        // 【核心修改】接收 polygons 矩阵阵列
         if (response.ok && result.success && result.polygons && result.polygons.length > 0) {
             samSession.polygons = result.polygons;
         } else { samSession.polygons = null; }
@@ -261,17 +276,24 @@ async function triggerSAM(canvas) {
     } catch (error) {} finally { canvas.style.cursor = 'crosshair'; }
 }
 
+document.getElementById('start-drawing-btn').insertAdjacentHTML('afterend', `
+    <button class="btn btn-success mt-1" id="commit-sam-btn" style="display:none;"><i class="fas fa-check-double me-1"></i>确认抠图</button>
+`);
+
 document.getElementById('commit-sam-btn').addEventListener('click', () => {
     if (samSession.polygons) {
+        const type = document.getElementById('regionType').value;
+        const mode = document.getElementById('extractMode').value;
         maskRects.push({
-            id: ++boxIdCounter, type: document.getElementById('regionType').value, mode: 'magic',
-            polygons: samSession.polygons, visible: true, ref_time: currentExtractTimeStr
+            id: ++boxIdCounter, type: type, mode: 'magic', extractMode: mode, polygons: samSession.polygons,
+            visible: true, ref_time: currentExtractTimeStr,
+            otherId: type === 'other' ? ++otherRegionCounter : null
         });
         updateLayerPanel();
     }
     samSession = { active: false, pos: [], neg: [], polygons: null, history: [] };
     document.getElementById('commit-sam-btn').style.display = 'none';
-    document.getElementById('undo-sam-btn').style.display = 'none';
+    document.getElementById('undo-btn').innerHTML = '<i class="fas fa-rotate-left me-1"></i>撤销';
     redrawCanvas();
 });
 
@@ -296,17 +318,6 @@ window.deleteGroup = function(type) {
     }
 };
 
-function clearAllBoxes() {
-    if (maskRects.length === 0) return;
-    if (confirm('确定要清空画布上的所有图层吗？')) {
-        maskRects = [];
-        samSession = { active: false, pos: [], neg: [], polygons: null, history: [] };
-        document.getElementById('commit-sam-btn').style.display = 'none';
-        document.getElementById('undo-sam-btn').style.display = 'none';
-        redrawCanvas(); updateLayerPanel();
-    }
-}
-
 function updateLayerPanel() {
     const panel = document.getElementById('layerPanel');
     if (maskRects.length === 0) { panel.innerHTML = '<div class="text-muted text-center" style="font-size:11px; margin-top:30px;">暂无图层</div>'; return; }
@@ -327,8 +338,7 @@ function updateLayerPanel() {
             <div>
                 <i class="fas ${eyeIcon} me-2" style="cursor:pointer;" onclick="toggleGroup('${group.type}')"></i>
                 <span style="font-weight:600; color:var(--dark);">${getRegionTypeName(group.type)}</span>
-                <span style="color:var(--gray-text); margin-left:4px;">(共 ${group.elements.length} 笔遮罩)</span>
-                <span class="text-muted" style="font-size:10px; margin-left:4px;">(@${group.ref_time})</span>
+                <span style="color:var(--gray-text); margin-left:4px;">(共 ${group.elements.length} 笔)</span>
             </div>
             <i class="fas fa-times text-danger" style="cursor:pointer;" onclick="deleteGroup('${group.type}')"></i>
         </div>`;
@@ -366,8 +376,9 @@ function redrawCanvas(canvasElement) {
 
 function drawBox(ctx, box, isDashed = false) {
     if (box.mode === 'magic' && box.polygons) {
-        ctx.strokeStyle = '#3498db'; ctx.lineWidth = 2; ctx.fillStyle = 'rgba(52, 152, 219, 0.3)';
-        // 【核心修改】遍历渲染多边形阵列
+        // 色彩模式给不同的颜色以作区分
+        const color = box.extractMode === 'solid' ? '52, 152, 219' : '230, 126, 34';
+        ctx.strokeStyle = `rgb(${color})`; ctx.lineWidth = 2; ctx.fillStyle = `rgba(${color}, 0.3)`;
         box.polygons.forEach(poly => {
             ctx.beginPath();
             poly.forEach((pt, index) => {
@@ -392,6 +403,15 @@ function drawBox(ctx, box, isDashed = false) {
     }
 }
 
+function clearAllBoxes() {
+    if (confirm('危险操作：确定要清空画布上所有的标注框吗？')) {
+        maskRects = []; otherRegionCounter = 0;
+        samSession = { active: false, pos: [], neg: [], polygons: null, history: [] };
+        document.getElementById('commit-sam-btn').style.display = 'none';
+        redrawCanvas(); updateLayerPanel();
+    }
+}
+
 async function generateJSON() {
     const activeMasks = maskRects.filter(b => b.visible);
     if (activeMasks.length === 0) { alert('画布为空'); return; }
@@ -403,17 +423,19 @@ async function generateJSON() {
     };
 
     activeMasks.forEach(box => {
-        let regionKey = box.type === 'other' ? `other_${box.id}` : box.type;
-        if (!jsonData.regions[regionKey]) jsonData.regions[regionKey] = { typeName: getRegionTypeName(box.type), reference_time: box.ref_time, largeBoxes: [], smallBoxes: [] };
+        let regionKey = box.type === 'other' ? `other_${box.otherId}` : box.type;
+
+        if (!jsonData.regions[regionKey]) {
+            jsonData.regions[regionKey] = { typeName: getRegionTypeName(box.type), reference_time: box.ref_time, largeBoxes: [], smallBoxes: [] };
+        }
 
         if (box.mode === 'magic') {
-            // 【核心修改】将复杂的空心矩阵阵列安全打平发送给 make_mask
-            box.polygons.forEach((poly, idx) => {
-                jsonData.regions[regionKey].smallBoxes.push({ id: `${box.id}_${idx}`, polygon: poly });
-            });
+            box.polygons.forEach((poly, idx) => { jsonData.regions[regionKey].smallBoxes.push({ id: `${box.id}_${idx}`, polygon: poly }); });
         } else {
             const realCoords = displayToImageCoordinates(box.x, box.y);
-            jsonData.regions[regionKey].largeBoxes.push({ id: box.id, x: realCoords.x, y: realCoords.y, width: Math.round(box.width / imageScale), height: Math.round(box.height / imageScale) });
+            const boxData = { id: box.id, x: realCoords.x, y: realCoords.y, width: Math.round(box.width / imageScale), height: Math.round(box.height / imageScale) };
+            if (box.mode === 'large') jsonData.regions[regionKey].largeBoxes.push(boxData);
+            else jsonData.regions[regionKey].smallBoxes.push(boxData);
         }
     });
 
@@ -435,7 +457,7 @@ async function generateJSON() {
 }
 
 function resetCanvas() {
-    maskRects = []; currentRect = null; boxIdCounter = 0; uploadedMaskFilename = null;
+    maskRects = []; currentRect = null; boxIdCounter = 0; otherRegionCounter = 0; uploadedMaskFilename = null;
     samSession = { active: false, pos: [], neg: [], polygons: null, history: [] };
     document.getElementById('mask-upload-status').style.display = 'none';
     const maskImage = document.getElementById('mask-image'); const maskCanvas = document.getElementById('mask-canvas');
@@ -473,7 +495,15 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('generate-json-btn').addEventListener('click', generateJSON);
     document.getElementById('source-video').addEventListener('change', function() { currentVideoFilename = this.value; });
 
-    document.getElementById('drawMode').addEventListener('change', function() {
+    const regionSelect = document.getElementById('regionType');
+    const modeSelect = document.getElementById('drawMode');
+
+    regionSelect.addEventListener('change', function() {
+        modeSelect.value = 'large';
+        modeSelect.dispatchEvent(new Event('change'));
+    });
+
+    modeSelect.addEventListener('change', function() {
         const isMagic = this.value === 'magic';
         document.getElementById('magic-hint').style.display = isMagic ? 'block' : 'none';
         document.getElementById('magic-mode-container').style.display = isMagic ? 'block' : 'none';
