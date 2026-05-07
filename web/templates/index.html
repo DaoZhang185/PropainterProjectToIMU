@@ -276,7 +276,6 @@
             border: 1px solid #e1f3d8;
         }
 
-        /* 自定义滚动条用于图层面板 */
         #layerPanel::-webkit-scrollbar { width: 4px; }
         #layerPanel::-webkit-scrollbar-thumb { background: #dcdde1; border-radius: 2px; }
     </style>
@@ -343,15 +342,21 @@
                     <div class="mb-2">
                         <select id="regionType" class="form-select">
                             <option value="logo">台标区域 (全局生效)</option>
-                            <option value="subtitle">字幕区域 (全局生效)</option>
                             <option value="title">剧名区域 (全局生效)</option>
-                            <option value="other">自定义区域 (AI 自动全域追踪)</option>
+                            <option value="subtitle">字幕区域 (全局生效)</option>
+                            <option value="other">自定义区域 (AI 自动追踪)</option>
                         </select>
                     </div>
-                    <div>
+                    <div class="mb-2">
                         <select id="drawMode" class="form-select">
-                            <option value="large">区域框 (红色-范围定位)</option>
-                            <option value="magic">🌟 魔法棒 (支持正负样本微调)</option>
+                            <option value="large">🟥 区域框 (手动拉框定位)</option>
+                            <option value="magic">🌟 魔法棒 (AI 智能点选)</option>
+                        </select>
+                    </div>
+                    <div class="mb-2" id="magic-mode-container" style="display:none;">
+                        <select id="extractMode" class="form-select" style="background-color: #fdf6ec; border-color: #f3d19e;">
+                            <option value="semantic">默认: 语义识别 (适合彩色框/主体)</option>
+                            <option value="color">精准: 色彩提纯 (适合纯白文字抠图)</option>
                         </select>
                     </div>
                 </div>
@@ -364,14 +369,23 @@
                     <button class="btn btn-warning" id="start-drawing-btn">
                         <i class="fas fa-pen-nib me-1"></i>进入绘制模式
                     </button>
-                    <button class="btn btn-success" id="commit-sam-btn" style="display:none;">
-                        <i class="fas fa-check-double me-1"></i>确认当前抠图
-                    </button>
+                    <div class="row g-2 mt-1">
+                        <div class="col-6">
+                            <button class="btn btn-secondary" id="undo-sam-btn" style="display:none;">
+                                <i class="fas fa-rotate-left me-1"></i>撤销点击
+                            </button>
+                        </div>
+                        <div class="col-6">
+                            <button class="btn btn-success" id="commit-sam-btn" style="display:none;">
+                                <i class="fas fa-check-double me-1"></i>确认抠图
+                            </button>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="control-divider"></div>
 
-                <div class="section-title">图层面板 (独立时空)</div>
+                <div class="section-title">图层面板 (自动合并)</div>
                 <div id="layerPanel" style="background: #fdfdfd; border: 1px solid var(--border-color); border-radius: 4px; padding: 8px; min-height: 100px; max-height: 200px; overflow-y: auto;">
                     <div class="text-muted text-center" style="font-size: 11px; margin-top: 30px;">暂无图层</div>
                 </div>
@@ -434,33 +448,7 @@
         </div>
     </div>
 
-    <div class="modal fade" id="helpModal" tabindex="-1" aria-labelledby="helpModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-lg">
-            <div class="modal-content" style="border-radius: 8px; border: none; box-shadow: 0 4px 16px rgba(0,0,0,0.1);">
-                <div class="modal-header" style="background: #fafafa; border-bottom: 1px solid var(--border-color); border-radius: 8px 8px 0 0;">
-                    <h5 class="modal-title fw-bold" id="helpModalLabel" style="color: var(--dark); font-size: 16px;">系统操作手册</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body p-4">
-                    <h6 class="fw-bold" style="color: var(--primary);">1. 资源准备</h6>
-                    <p class="text-muted" style="font-size: 13px;">上传视频后，系统自动校验时长与帧率信息。</p>
-
-                    <h6 class="fw-bold mt-4" style="color: var(--primary);">2. 掩码 (Mask) 制作规范</h6>
-                    <ol class="text-muted" style="font-size: 13px; line-height: 1.8;">
-                        <li class="mb-1"><strong>多图层管理：</strong>每个画的框或扣的图都会生成一个独立的“图层”，您可以在左侧面板控制它是否参与最终运算。</li>
-                        <li class="mb-1"><strong>自定义区域追踪：</strong>选择"自定义区域"并画框后，您无需指定起止时间，AI 会在全视频自动寻找并只在它出现的时间段内进行擦除！</li>
-                        <li class="mb-1"><strong>高级魔法棒：</strong>选择魔法棒后，<kbd>左键</kbd>点击目标物体获取正向特征，<kbd>Alt + 左键</kbd>点击不要的背景进行负向排除。</li>
-                        <li>绘制完成后，务必点击<strong>提交标注数据</strong>。</li>
-                    </ol>
-
-                    <h6 class="fw-bold mt-4" style="color: var(--primary);">3. 启动分布式引擎</h6>
-                    <p class="text-muted" style="font-size: 13px;">点击<strong>启动清洗</strong>。系统会自动对重叠时空的图层进行算力合并优化，完成后即可下载纯净视频。</p>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/js/bootstrap.bundle.min.js"></script>
-    <script src="{{ url_for('static', path='app.js') }}?v=2.0"></script>
+    <script src="{{ url_for('static', path='app.js') }}?v=3.0"></script>
 </body>
 </html>
