@@ -142,7 +142,8 @@ def auto_track_regions(all_poses, reference_times, frames_dir, frame_files, fps)
     time_ranges = {}
     print("\n[AutoTracker] 正在全景扫描动态掩码生效时间段...")
     for key, coords in all_poses.items():
-        if key in reference_times and key != '2':  # 字幕一般不追踪，通常是全局或特定区域
+        # 【核心修正】彻底封杀台标和剧名，只允许自定义区域(other)进入 AI 追踪消耗算力！
+        if 'other' in str(key) and key in reference_times:
             ref_time = reference_times[key]
             ref_frame_idx = max(0, min(int(ref_time * fps), len(frame_files) - 1))
             ref_img = cv2.imread(os.path.join(frames_dir, frame_files[ref_frame_idx]), cv2.IMREAD_GRAYSCALE)
