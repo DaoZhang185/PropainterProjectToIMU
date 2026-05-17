@@ -5,6 +5,8 @@ import cv2
 import numpy as np
 import re
 import math
+from functools import partial                        # <--- 漏了这行
+from concurrent.futures import ThreadPoolExecutor    # <--- 以及这行
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
