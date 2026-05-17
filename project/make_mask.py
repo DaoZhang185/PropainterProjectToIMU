@@ -4,9 +4,7 @@ import argparse
 import cv2
 import numpy as np
 import re
-import math  # 【核心新增】用于向上/向下取整
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
+import math
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
@@ -37,17 +35,28 @@ def process_single_frame_mask(img_path, local_poses, output_dir, time_ranges, fp
     frame_idx = int(m_idx.group()) if m_idx else -1
 
     for key, coords in local_poses.items():
-        # 【完美支持多段分散时间段判定】
-        if key in time_ranges and time_ranges[key]:
-            ranges = time_ranges[key]
-            is_in_range = False
-            for r in ranges:
-                # r 是一个子列表: [start_sec, end_sec]
-                if math.floor(r[0] * fps) <= frame_idx <= math.ceil(r[1] * fps):
-                    is_in_range = True
-                    break
-            if not is_in_range:
-                continue
+        # =================================================================
+        # 【核心修正】严格限制时效判定：只有自定义限时区域（other）才参与时间拦截！
+        # 台标（'1'）和剧名（'3'）作为恒定区域，直接跳过此段，确保全视频无死角每一帧都生效。
+        # =================================================================
+        if 'other' in str(key) and key in time_ranges:
+            # 兼容处理：支持多段时轴数组 [[st, ed], [st, ed]] 或单段时轴 [st, ed]
+            if isinstance(time_ranges[key], list) and len(time_ranges[key]) > 0 and isinstance(time_ranges[key][0], list):
+                ranges = time_ranges[key]
+                is_in_range = False
+                for r in ranges:
+                    if math.floor(r[0] * fps) <= frame_idx <= math.ceil(r[1] * fps):
+                        is_in_range = True
+                        break
+                if not is_in_range:
+                    continue
+            else:
+                # 兼容手动输入的老版单段结构
+                start_sec, end_sec = time_ranges[key]
+                start_f = math.floor(start_sec * fps)
+                end_f = math.ceil(end_sec * fps)
+                if not (start_f <= frame_idx <= end_f):
+                    continue
 
         is_solid = (key != '2')
 
@@ -110,8 +119,13 @@ def generate_local_masks(frame_dir, output_dir, original_poses, crop_coords, tim
     static_mask = np.zeros((h, w), dtype=np.uint8)
     has_static_content = False
 
+    # =================================================================
+    # 【核心修正】强制台标('1')和剧名('3')无条件并入全局静态基本盘(static_mask)
+    # 只有不属于动态时间锁定的图层，才算作真正的静态组件
+    # =================================================================
     for key, coords in local_poses.items():
-        if key != '2' and key not in time_ranges:
+        is_dynamic = (str(key) == '2' or 'other' in str(key))
+        if not is_dynamic:
             for item in coords:
                 if len(item) == 4 and isinstance(item[0], (int, float)):
                     cv2.rectangle(static_mask, (int(item[0]), int(item[1])), (int(item[2]), int(item[3])), 255, -1)
@@ -124,7 +138,8 @@ def generate_local_masks(frame_dir, output_dir, original_poses, crop_coords, tim
         static_mask = cv2.dilate(static_mask, np.ones((5, 5), np.uint8), iterations=3)
     cv2.imwrite(os.path.join(output_dir, "static_mask.png"), static_mask)
 
-    has_dynamic = any(k == '2' or k in time_ranges for k in local_poses)
+    # 只有包含字幕或自定义限时追踪区域时，才激活耗时的逐帧动态渲染
+    has_dynamic = any(str(k) == '2' or 'other' in str(k) for k in local_poses)
     if not has_dynamic: return
 
     process_func = partial(
