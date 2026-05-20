@@ -102,11 +102,27 @@ async function downloadVideo() {
     try {
         const response = await fetch(`/api/tasks/${currentTaskId}/download-video`);
         if (response.ok) {
-            const blob = await response.blob(); const url = window.URL.createObjectURL(blob);
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
 
-            const a = document.createElement('a'); a.href = url;
-            a.download = isMnSubEnabled ? '处理后蒙文字幕视频.mp4' : '处理后纯净视频.mp4';
-            document.body.appendChild(a); a.click(); window.URL.revokeObjectURL(url); document.body.removeChild(a);
+            // =================================================================
+            // 【核心修改】动态解析原始文件名并拼接后缀
+            // =================================================================
+            let baseName = currentVideoFilename;
+            const dotIndex = baseName.lastIndexOf('.');
+            if (dotIndex !== -1) {
+                // 如果文件名是 1.mp4，这里就截取出 "1"
+                baseName = baseName.substring(0, dotIndex);
+            }
+            // 根据蒙文开关状态，赋予不同的下载名称
+            a.download = isMnSubEnabled ? `${baseName}-after-mn.mp4` : `${baseName}-after.mp4`;
+
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
         }
     } catch (error) {}
 }

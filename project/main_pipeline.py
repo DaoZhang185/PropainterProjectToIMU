@@ -145,6 +145,13 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080, time_ranges
 
 
 def auto_track_regions(all_poses, reference_times, frames_dir, frame_files, fps):
+    # =================================================================
+    # 【临时修改】展示期间强制跳过追踪算法！直接返回空字典。
+    # 这样既省下了 Canny 边缘扫描的算力时间，又因为时间库为空，
+    # 导致下游掩码渲染时直接无视时间限制，变为全局渲染生效！
+    return {}
+    # =================================================================
+
     time_ranges = {}
     print("\n[AutoTracker] 正在全景扫描动态掩码生效时间段...")
     for key, coords in all_poses.items():
