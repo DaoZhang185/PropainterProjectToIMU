@@ -340,6 +340,9 @@
                     <button class="btn btn-outline-primary" id="extract-frame-btn">
                         <i class="fas fa-crosshairs me-1"></i>提取视频画面
                     </button>
+                    <button class="btn btn-outline-success mt-2" id="enable-mn-sub-btn">
+                        <i class="fas fa-language me-1"></i>添加蒙文字幕
+                    </button>
                 </div>
 
                 <div class="mb-3">
@@ -350,6 +353,7 @@
                             <option value="subtitle">字幕区域</option>
                             <option value="title">剧名区域</option>
                             <option value="other">自定义区域 (AI后台自动追踪全时段)</option>
+                            <option value="sub_pos" id="sub-pos-option" style="display: none; color: #9b59b6; font-weight: bold;" hidden>蒙文字幕位置</option>
                         </select>
                     </div>
                     <div class="mb-2">
@@ -434,7 +438,7 @@
                 </div>
 
                 <button class="btn btn-outline-primary mt-2" id="download-video-btn" disabled>
-                    <i class="fas fa-download me-1"></i>下载处理后的视频
+                    <i class="fas fa-download me-1"></i><span id="download-text">下载处理后的纯净视频</span>
                 </button>
 
                 <div style="height: 30px;"></div>

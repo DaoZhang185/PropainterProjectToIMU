@@ -11,6 +11,10 @@ import datetime
 import time
 import threading
 import queue
+import re
+import hashlib
+import urllib.parse
+import requests
 from concurrent.futures import ThreadPoolExecutor
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,13 +29,15 @@ class DualLogger(object):
 
     def write(self, message):
         try:
-            self.terminal.write(message); self.log.write(message)
+            self.terminal.write(message);
+            self.log.write(message)
         except Exception:
             pass
 
     def flush(self):
         try:
-            self.terminal.flush(); self.log.flush()
+            self.terminal.flush();
+            self.log.flush()
         except Exception:
             pass
 
@@ -61,7 +67,8 @@ def extract_frames_ffmpeg(video_path, output_dir):
     cmd = ['ffmpeg', '-i', video_path, '-start_number', '0', '-vsync', '0', '-q:v', '2',
            os.path.join(output_dir, 'frame_%04d.png')]
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); return True
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL);
+        return True
     except:
         return False
 
@@ -137,20 +144,16 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080, time_ranges
     return boxes
 
 
-# 【核心新增】AI 时轴自动追踪器
 def auto_track_regions(all_poses, reference_times, frames_dir, frame_files, fps):
     time_ranges = {}
     print("\n[AutoTracker] 正在全景扫描动态掩码生效时间段...")
     for key, coords in all_poses.items():
-        # 【核心修正】彻底封杀台标和剧名，只允许自定义区域(other)进入 AI 追踪消耗算力！
         if 'other' in str(key) and key in reference_times:
             ref_time = reference_times[key]
             ref_frame_idx = max(0, min(int(ref_time * fps), len(frame_files) - 1))
             ref_img = cv2.imread(os.path.join(frames_dir, frame_files[ref_frame_idx]), cv2.IMREAD_GRAYSCALE)
-
             if ref_img is None: continue
 
-            # 获取该特征区域的外接包围盒
             all_x, all_y = [], []
             for item in coords:
                 if len(item) == 4 and isinstance(item[0], (int, float)):
@@ -167,8 +170,6 @@ def auto_track_regions(all_poses, reference_times, frames_dir, frame_files, fps)
 
             template = ref_img[y1:y2, x1:x2]
             if template.size == 0 or template.shape[0] < 5 or template.shape[1] < 5: continue
-
-            # 提取边缘特征抗干扰
             template_edges = cv2.Canny(template, 50, 150)
 
             active_frames = []
@@ -177,19 +178,14 @@ def auto_track_regions(all_poses, reference_times, frames_dir, frame_files, fps)
                 if img is None: continue
                 roi = img[y1:y2, x1:x2]
                 roi_edges = cv2.Canny(roi, 50, 150)
-
-                # 边缘差异计算
                 score = np.mean(cv2.absdiff(template_edges, roi_edges))
-                if score < 20.0:  # 高度相似
-                    active_frames.append(i)
+                if score < 20.0: active_frames.append(i)
 
-            # 汇聚离散帧，生成时间段 [[start1, end1], [start2, end2]]
             ranges = []
             if active_frames:
-                start = active_frames[0]
-                prev = active_frames[0]
+                start, prev = active_frames[0], active_frames[0]
                 for idx in active_frames[1:]:
-                    if idx - prev > int(fps * 1.5):  # 允许 1.5秒以内的闪烁容错
+                    if idx - prev > int(fps * 1.5):
                         ranges.append([start / fps, prev / fps])
                         start = idx
                     prev = idx
@@ -198,6 +194,7 @@ def auto_track_regions(all_poses, reference_times, frames_dir, frame_files, fps)
             print(
                 f"    ✓ {key} 自动检出 {len(ranges)} 个生效时段: {[[round(r[0], 1), round(r[1], 1)] for r in ranges]}")
     return time_ranges
+
 
 def crop_worker(args):
     src, dst, coords = args
@@ -225,20 +222,231 @@ def render_video(frames_dir, source_video, output_path, fps=25.0):
            '-i', source_video, '-vf', "pad=ceil(iw/2)*2:ceil(ih/2)*2", '-c:v', 'mpeg4', '-q:v', '2',
            '-map', '0:v:0', '-map', '1:a:0?', '-c:a', 'copy', '-shortest', output_path]
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); return True
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL);
+        return True
     except:
+        return False
+
+
+# =================================================================
+# 【核心新增】音频提取、机器翻译与蒙文字幕渲染挂载链路
+# =================================================================
+def get_md5(text):
+    import uuid  # 防止报错
+    return hashlib.md5(text.encode('utf-8')).hexdigest().upper()
+
+
+def translate_to_mongolian(text, pid="YOUR_PID", appKey="YOUR_APPKEY"):
+    """
+    遵循奥云官方文档规范：字典序排序、URLEncode、最后 MD5 获取大写签名。
+    """
+    if not text.strip(): return text
+    url = "http://oy.nmgoyun.com/api/fy/v1"
+    timestamp = str(int(time.time() * 1000))
+    import uuid  # 防止报错
+    nonce = uuid.uuid4().hex
+
+    params = {
+        "inputStr": text,
+        "nonce": nonce,
+        "pid": pid,
+        "timestamp": timestamp,
+        "type": "5",  # 汉 -> 传统蒙文
+        "appKey": appKey
+    }
+
+    # 严格 MD5 签名生成
+    sorted_keys = sorted(params.keys())
+    temp_list = []
+    for k in sorted_keys:
+        val = str(params[k])
+        encoded_val = urllib.parse.quote_plus(val)  # 等同于 Java的 URLEncoder.encode
+        temp_list.append(f"{k}={encoded_val}")
+
+    query_string = "&".join(temp_list)
+    sign = get_md5(query_string)
+
+    payload = {
+        "inputStr": text,
+        "nonce": nonce,
+        "pid": pid,
+        "sign": sign,
+        "timestamp": timestamp,
+        "type": 5
+    }
+
+    try:
+        resp = requests.post(url, json=payload, timeout=10)
+        res_json = resp.json()
+        if res_json.get("code") == "0000":
+            return res_json.get("data", text)
+        else:
+            print(f"    ⚠ [翻译拦截] API 返回失败: {res_json}")
+            return text
+    except Exception as e:
+        print(f"    ⚠ [翻译异常] {e}")
+        return text
+
+
+def convert_srt_to_ass_vertical(srt_path, ass_path, subtitle_pos, img_w, img_h, pid, appkey):
+    """
+    解析 SRT，逐块发起 API 翻译，最终封装为带绝对坐标、向右旋转 90°(-90/270) 的高阶 ASS 特效字幕文件。
+    """
+    x1, y1, x2, y2 = subtitle_pos
+    # 锚点偏移量微调
+    pos_x = x1 + 10
+    pos_y = y1 + 10
+
+    # Alignment=7 代表绝对坐标基准为文字的【左上角】
+    # Angle=270 (-90度) 能够让蒙文垂直排列
+    ass_header = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {img_w}
+PlayResY: {img_h}
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Oyun Qagan Tig,24,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,270,1,1.5,0,7,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    try:
+        with open(srt_path, 'r', encoding='utf-8') as f:
+            srt_content = f.read()
+
+        blocks = srt_content.strip().split('\n\n')
+        ass_events = []
+        for block in blocks:
+            lines = block.split('\n')
+            if len(lines) >= 3:
+                time_line = lines[1]
+                text_lines = lines[2:]
+                original_text = " ".join(text_lines)
+
+                # ========================================
+                # 🚀 激活机器翻译
+                # ========================================
+                translated_text = translate_to_mongolian(original_text, pid, appkey)
+                text = translated_text.replace('\n', '\\N')
+
+                # 解析 SRT 时间格式：00:00:00,000 --> 00:00:05,000
+                time_match = re.match(r'(\d{2}):(\d{2}):(\d{2}),(\d{3}) --> (\d{2}):(\d{2}):(\d{2}),(\d{3})', time_line)
+                if time_match:
+                    h1, m1, s1, ms1, h2, m2, s2, ms2 = time_match.groups()
+                    start = f"{int(h1)}:{m1}:{s1}.{ms1[:2]}"
+                    end = f"{int(h2)}:{m2}:{s2}.{ms2[:2]}"
+
+                    # 植入绝对定位标签 \pos(x,y)
+                    ass_text = f"{{\\pos({pos_x},{pos_y})}}{text}"
+                    ass_events.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{ass_text}")
+
+        with open(ass_path, 'w', encoding='utf-8') as f:
+            f.write(ass_header + "\n".join(ass_events) + "\n")
+        return True
+    except Exception as e:
+        print(f"    ✗ [字幕系统] ASS 转换严重异常: {e}")
+        return False
+
+
+def process_audio_and_subtitles(original_video, temp_clean_video, final_output_video, workspace, subtitle_pos, img_w,
+                                img_h, print_lock):
+    """
+    全自动：抽音轨 -> Whisper出SRT -> 调接口译蒙文 -> 编组定点ASS格式 -> FFmpeg挂载烧录。
+    """
+    if not subtitle_pos:
+        # 用户没画框，直接封版
+        shutil.move(temp_clean_video, final_output_video)
+        return True
+
+    subtitle_dir = os.path.join(workspace, "subtitle")
+    setup_dirs(subtitle_dir)
+    video_basename = os.path.splitext(os.path.basename(original_video))[0]
+
+    with print_lock:
+        print("\n[Step 8] 激活语音提取、翻译与蒙文字幕渲染烧录系统...")
+
+        # ============== 从这里开始 ==============
+        # 1. 抽取音频 (修改为与原视频同名)
+        audio_path = os.path.join(subtitle_dir, f"{video_basename}.wav")
+        with print_lock:
+            print("    >> 提取视频音轨...")
+        subprocess.run(['ffmpeg', '-y', '-i', original_video, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+                        audio_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        if not os.path.exists(audio_path):
+            with print_lock: print("    ⚠ 原视频无声轨，跳过字幕生成。")
+            shutil.move(temp_clean_video, final_output_video)
+            return False
+
+        # 2. 调用本地 Whisper turbo
+        with print_lock:
+            print("    >> 唤醒 Whisper 提取文字...")
+        subprocess.run(
+            ['whisper', audio_path, '--model', 'turbo', '--output_format', 'srt', '--output_dir', subtitle_dir],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Whisper 生成的字幕会默认与输入的 wav 文件同名
+        final_srt = os.path.join(subtitle_dir, f"{video_basename}.srt")
+        if not os.path.exists(final_srt):
+            with print_lock: print("    ⚠ Whisper 生成失败，将直接输出纯净视频。")
+            shutil.move(temp_clean_video, final_output_video)
+            return False
+
+        # 3. 动态读取 API 配置文件并执行翻译封装
+        with print_lock:
+            print("    >> 触发奥云翻译流与高阶 ASS 特效阵列装配...")
+        mn_ass_path = os.path.join(subtitle_dir, f"{video_basename}_mn.ass")
+
+        config_path = os.path.join(root_dir, "project", "api_configure", "api_configuration.json")
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                api_config = json.load(f)
+            pid = api_config.get("pid", "")
+            appkey = api_config.get("appKey", "")
+        except Exception as e:
+            with print_lock:
+                print(f"    ⚠ 读取配置文件失败，请检查路径或JSON格式: {e}")
+            pid, appkey = "", ""
+
+        convert_srt_to_ass_vertical(final_srt, mn_ass_path, subtitle_pos, img_w, img_h, pid, appkey)
+        # ============== 到这里结束，下面保留原来的 FFmpeg 挂载逻辑 ==============
+
+    # 4. FFmpeg 采用【相对路径】挂载字体及字幕，终极压制
+    with print_lock:
+        print("    >> 挂载字体，烧录字幕并封包最终母带...")
+    # 字体相对工作路径
+    fonts_dir_relative = "fronts"
+    ass_relative = os.path.relpath(mn_ass_path, current_dir).replace('\\', '/')
+
+    cmd = [
+        'ffmpeg', '-y', '-i', temp_clean_video,
+        '-vf', f"ass='{ass_relative}':fontsdir='{fonts_dir_relative}'",
+        '-c:a', 'copy', '-c:v', 'libx264', '-crf', '18',
+        final_output_video
+    ]
+
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if os.path.exists(final_output_video):
+        with print_lock:
+            print(f"    ✓ 定点旋转字幕烧录成功！最终成品路径: {final_output_video}")
+        return True
+    else:
+        with print_lock:
+            print(f"    ✗ 字幕烧录失败: {res.stderr}")
+        shutil.move(temp_clean_video, final_output_video)
         return False
 
 
 class GPUManager:
     def __init__(self, gpu_id, scale_delay_sec, cooldown_sec, max_absolute_workers=4):
-        self.gpu_id = str(gpu_id)
-        self.scale_delay_sec = scale_delay_sec
-        self.cooldown_sec = cooldown_sec
+        self.gpu_id = str(gpu_id);
+        self.scale_delay_sec = scale_delay_sec;
+        self.cooldown_sec = cooldown_sec;
         self.max_absolute_workers = max_absolute_workers
-        self.concurrency_limit = 1
-        self.active_tasks = 0
-        self.last_scale_time = time.time()
+        self.concurrency_limit = 1;
+        self.active_tasks = 0;
+        self.last_scale_time = time.time();
         self.cooldown_until = 0
 
     def can_accept_task(self):
@@ -249,13 +457,13 @@ class GPUManager:
         if t > self.cooldown_until and self.active_tasks == self.concurrency_limit:
             if t - self.last_scale_time > self.scale_delay_sec:
                 if self.concurrency_limit < self.max_absolute_workers:
-                    self.concurrency_limit += 1
+                    self.concurrency_limit += 1;
                     self.last_scale_time = t
                     with print_lock: print(f"    🚀 [扩容] GPU {self.gpu_id} 并发上限提升至: {self.concurrency_limit}")
 
     def handle_oom(self, print_lock):
-        self.concurrency_limit = max(1, self.active_tasks)
-        self.cooldown_until = time.time() + self.cooldown_sec
+        self.concurrency_limit = max(1, self.active_tasks);
+        self.cooldown_until = time.time() + self.cooldown_sec;
         self.last_scale_time = time.time()
         with print_lock: print(
             f"    ⚠️ [OOM] GPU {self.gpu_id} 锁定并发数为 {self.concurrency_limit}，冷却 {self.cooldown_sec // 60} 分钟。")
@@ -292,7 +500,6 @@ def main():
     extract_frames_ffmpeg(args.video, frames_dir)
     frame_files = sorted([f for f in os.listdir(frames_dir) if f.endswith('.png')])
 
-    # 【核心获取视频真实的 FPS】
     try:
         cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate', '-of',
                'default=noprint_wrappers=1:nokey=1', args.video]
@@ -305,192 +512,178 @@ def main():
 
     img_h, img_w = cv2.imread(os.path.join(frames_dir, frame_files[0])).shape[:2]
 
-    # 【修改调用方式】
-    all_poses, reference_times = load_poses_from_json(args.mask_json)
-    if not all_poses: sys.exit(1)
+    # 【获取蒙文字幕放置位置】
+    all_poses, reference_times, subtitle_pos = load_poses_from_json(args.mask_json)
 
-    # 【核心调用】激活 AI 全域追踪器，生成时间段
-    time_ranges = auto_track_regions(all_poses, reference_times, frames_dir, frame_files, fps)
+    if all_poses:
+        time_ranges = auto_track_regions(all_poses, reference_times, frames_dir, frame_files, fps)
+        work_plans = resolve_overlaps(all_poses, padding=args.padding, img_w=img_w, img_h=img_h,
+                                      time_ranges=time_ranges)
 
-    work_plans = resolve_overlaps(all_poses, padding=args.padding, img_w=img_w, img_h=img_h, time_ranges=time_ranges)
+        global_task_queue = queue.Queue()
+        all_merge_tasks = []
 
-    global_task_queue = queue.Queue()
-    all_merge_tasks = []
+        print("\n[Step 2] 正在进行全量场景切分与预处理...")
+        for plan in work_plans:
+            region_id = "_".join(plan['keys'])
+            region_dir = os.path.join(args.workspace, f"region_{region_id}")
+            crop_frames_dir = os.path.join(region_dir, "frames")
+            setup_dirs(crop_frames_dir)
 
-    print("\n[Step 2] 正在进行全量场景切分与预处理...")
-    for plan in work_plans:
-        region_id = "_".join(plan['keys'])
-        region_dir = os.path.join(args.workspace, f"region_{region_id}")
-        crop_frames_dir = os.path.join(region_dir, "frames")
-        setup_dirs(crop_frames_dir)
+            tasks = [(os.path.join(frames_dir, f), os.path.join(crop_frames_dir, f), plan['crop_coords']) for f in
+                     frame_files]
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                list(ex.map(crop_worker, tasks))
 
-        tasks = [(os.path.join(frames_dir, f), os.path.join(crop_frames_dir, f), plan['crop_coords']) for f in
-                 frame_files]
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            list(ex.map(crop_worker, tasks))
+            scene_indices = detect_scenes_from_folder(crop_frames_dir, threshold=20.0)
+            if 0 not in scene_indices: scene_indices.insert(0, 0)
+            if len(frame_files) not in scene_indices: scene_indices.append(len(frame_files))
+            scene_indices = sorted(list(set(scene_indices)))
 
-        scene_indices = detect_scenes_from_folder(crop_frames_dir, threshold=20.0)
-        if 0 not in scene_indices: scene_indices.insert(0, 0)
-        if len(frame_files) not in scene_indices: scene_indices.append(len(frame_files))
-        scene_indices = sorted(list(set(scene_indices)))
+            mask_output_dir = os.path.join(region_dir, "masks")
+            generate_local_masks(crop_frames_dir, mask_output_dir, plan['original_poses'], plan['crop_coords'],
+                                 time_ranges=plan['time_ranges'], fps=fps)
 
-        mask_output_dir = os.path.join(region_dir, "masks")
+            results_dir = os.path.join(region_dir, "results")
+            for i in range(len(scene_indices) - 1):
+                for seg_start, seg_end in get_recursive_segments(scene_indices[i], scene_indices[i + 1],
+                                                                 args.max_frames):
+                    seg_name = f"seg_{seg_start:06d}_{seg_end:06d}"
+                    seg_out_dir = os.path.join(results_dir, seg_name)
 
-        # 【关键参数传递】将真实的 FPS 传给打工小弟，以便时间 -> 帧数的绝对换算！
-        generate_local_masks(crop_frames_dir, mask_output_dir, plan['original_poses'], plan['crop_coords'],
-                             time_ranges=plan['time_ranges'], fps=fps)
+                    in_dir = os.path.join(region_dir, "temp_inputs", seg_name)
+                    mk_dir = os.path.join(region_dir, "temp_masks", seg_name)
+                    setup_dirs(in_dir);
+                    setup_dirs(mk_dir)
 
-        results_dir = os.path.join(region_dir, "results")
-        for i in range(len(scene_indices) - 1):
-            for seg_start, seg_end in get_recursive_segments(scene_indices[i], scene_indices[i + 1], args.max_frames):
-                seg_name = f"seg_{seg_start:06d}_{seg_end:06d}"
-                seg_out_dir = os.path.join(results_dir, seg_name)
+                    valid = 0;
+                    has_white_mask = False
+                    for f_idx in range(seg_start, seg_end):
+                        if f_idx >= len(frame_files): break
+                        f_name = frame_files[f_idx]
+                        os.symlink(os.path.abspath(os.path.join(crop_frames_dir, f_name)), os.path.join(in_dir, f_name))
+                        src_m = os.path.abspath(os.path.join(mask_output_dir, f_name))
+                        src_s = os.path.abspath(os.path.join(mask_output_dir, "static_mask.png"))
 
-                in_dir = os.path.join(region_dir, "temp_inputs", seg_name)
-                mk_dir = os.path.join(region_dir, "temp_masks", seg_name)
-                setup_dirs(in_dir);
-                setup_dirs(mk_dir)
+                        if os.path.exists(src_m):
+                            os.symlink(src_m, os.path.join(mk_dir, f_name))
+                        elif os.path.exists(src_s):
+                            os.symlink(src_s, os.path.join(mk_dir, f_name))
 
-                valid = 0
-                has_white_mask = False
+                        if not has_white_mask:
+                            check_path = src_m if os.path.exists(src_m) else (src_s if os.path.exists(src_s) else None)
+                            if check_path:
+                                img_chk = cv2.imread(check_path, cv2.IMREAD_GRAYSCALE)
+                                if img_chk is not None and cv2.countNonZero(img_chk) > 0: has_white_mask = True
+                        valid += 1
 
-                for f_idx in range(seg_start, seg_end):
-                    if f_idx >= len(frame_files): break
-                    f_name = frame_files[f_idx]
-                    os.symlink(os.path.abspath(os.path.join(crop_frames_dir, f_name)), os.path.join(in_dir, f_name))
-                    src_m = os.path.abspath(os.path.join(mask_output_dir, f_name))
-                    src_s = os.path.abspath(os.path.join(mask_output_dir, "static_mask.png"))
+                    if valid > 0:
+                        if has_white_mask:
+                            global_task_queue.put(
+                                {'region': region_id, 'seg_name': seg_name, 'in_dir': in_dir, 'mk_dir': mk_dir,
+                                 'out_dir': seg_out_dir})
+                        all_merge_tasks.append(
+                            {'result_dir': seg_out_dir, 'coords': plan['crop_coords'], 'start_frame': seg_start,
+                             'end_frame': seg_end})
 
-                    if os.path.exists(src_m):
-                        os.symlink(src_m, os.path.join(mk_dir, f_name))
-                    elif os.path.exists(src_s):
-                        os.symlink(src_s, os.path.join(mk_dir, f_name))
+        total_tasks = global_task_queue.qsize()
+        print(f"[Main] 预处理完成！算力豁免后总计 {total_tasks} 个待处理片段进入 GPU 队列。")
 
-                    if not has_white_mask:
-                        check_path = src_m if os.path.exists(src_m) else (src_s if os.path.exists(src_s) else None)
-                        if check_path:
-                            img_chk = cv2.imread(check_path, cv2.IMREAD_GRAYSCALE)
-                            if img_chk is not None and cv2.countNonZero(img_chk) > 0:
-                                has_white_mask = True
-                    valid += 1
+        print("\n[Step 3] 启动多 GPU AIMD 调度引擎...")
+        gpu_managers = [GPUManager(g, args.scale_delay * 60, args.cooldown * 60, args.max_workers_per_gpu) for g in
+                        gpu_list]
+        active_threads = [];
+        print_lock = threading.Lock();
+        completed_tasks = 0
 
-                if valid > 0:
-                    if has_white_mask:
-                        global_task_queue.put(
-                            {'region': region_id, 'seg_name': seg_name, 'in_dir': in_dir, 'mk_dir': mk_dir,
-                             'out_dir': seg_out_dir})
-                    else:
-                        print(
-                            f"    ℹ [{region_id} | {seg_name}] 智能判定该片段为无水印实效区(全黑掩码)，直接跳过显卡推理！")
-
-                    all_merge_tasks.append(
-                        {'result_dir': seg_out_dir, 'coords': plan['crop_coords'], 'start_frame': seg_start,
-                         'end_frame': seg_end})
-
-    total_tasks = global_task_queue.qsize()
-    print(f"[Main] 预处理完成！算力豁免后总计 {total_tasks} 个待处理片段进入 GPU 队列。")
-
-    print("\n[Step 3] 启动多 GPU AIMD 调度引擎...")
-    gpu_managers = [GPUManager(g, args.scale_delay * 60, args.cooldown * 60, args.max_workers_per_gpu) for g in
-                    gpu_list]
-    active_threads = []
-    print_lock = threading.Lock()
-    completed_tasks = 0
-
-    def inference_worker(task, gpu_manager, result_dict):
-        cmd = [
-            sys.executable, args.model_path,
-            "--video", task['in_dir'], "--mask", task['mk_dir'], "--output", task['out_dir'],
-            "--fp16", "--mask_dilation", "4", "--flow_mask_dilation", "20",
-            "--raft_iter", "20", "--ref_stride", "10", "--subvideo_length", "30"
-        ]
-
-        env = os.environ.copy()
-        env['CUDA_VISIBLE_DEVICES'] = gpu_manager.gpu_id
-        tag = f"[GPU {gpu_manager.gpu_id} | {task['region']} | {task['seg_name']}]"
-
-        with print_lock:
-            print(f"    分配任务 -> {tag}")
-
-        try:
-            process = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=current_dir,
-                                       universal_newlines=True, errors='replace')
-            is_oom = False
-            while True:
-                line = process.stdout.readline()
-                if line == '' and process.poll() is not None: break
-                if line:
-                    l = line.strip()
-                    if "CUDA out of memory" in l or "RuntimeError: CUDA" in l:
-                        is_oom = True
-                    elif "Processing" in l or "%|" in l:
-                        with print_lock:
-                            print(f"    {tag} {l}")
-
-            if is_oom or process.returncode == 137:
-                result_dict['status'] = 'oom'
-            elif process.returncode != 0:
+        def inference_worker(task, gpu_manager, result_dict):
+            cmd = [sys.executable, args.model_path, "--video", task['in_dir'], "--mask", task['mk_dir'], "--output",
+                   task['out_dir'], "--fp16", "--mask_dilation", "4", "--flow_mask_dilation", "20", "--raft_iter", "20",
+                   "--ref_stride", "10", "--subvideo_length", "30"]
+            env = os.environ.copy();
+            env['CUDA_VISIBLE_DEVICES'] = gpu_manager.gpu_id
+            tag = f"[GPU {gpu_manager.gpu_id} | {task['region']} | {task['seg_name']}]"
+            try:
+                process = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                           cwd=current_dir, universal_newlines=True, errors='replace')
+                is_oom = False
+                while True:
+                    line = process.stdout.readline()
+                    if line == '' and process.poll() is not None: break
+                    if line:
+                        l = line.strip()
+                        if "CUDA out of memory" in l or "RuntimeError: CUDA" in l: is_oom = True
+                if is_oom or process.returncode == 137:
+                    result_dict['status'] = 'oom'
+                elif process.returncode != 0:
+                    result_dict['status'] = 'error'
+                else:
+                    mp4 = os.path.join(task['out_dir'], "inference_output.mp4")
+                    if os.path.exists(mp4):
+                        frm_dir = os.path.join(task['out_dir'], "frames")
+                        os.makedirs(frm_dir, exist_ok=True)
+                        subprocess.run(
+                            ['ffmpeg', '-y', '-i', mp4, '-start_number', '0', os.path.join(frm_dir, '%04d.png')],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    result_dict['status'] = 'success'
+            except Exception as e:
                 result_dict['status'] = 'error'
-            else:
-                mp4 = os.path.join(task['out_dir'], "inference_output.mp4")
-                if os.path.exists(mp4):
-                    frm_dir = os.path.join(task['out_dir'], "frames")
-                    os.makedirs(frm_dir, exist_ok=True)
-                    subprocess.run(['ffmpeg', '-y', '-i', mp4, '-start_number', '0', os.path.join(frm_dir, '%04d.png')],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                result_dict['status'] = 'success'
-        except Exception as e:
-            with print_lock:
-                print(f"    异常 {tag} -> {e}")
-            result_dict['status'] = 'error'
 
-    while not global_task_queue.empty() or active_threads:
-        for gm in gpu_managers:
-            gm.try_scale_up(print_lock)
-            while gm.can_accept_task() and not global_task_queue.empty():
-                task = global_task_queue.get()
-                gm.active_tasks += 1
-                res = {}
-                t = threading.Thread(target=inference_worker, args=(task, gm, res))
-                t.task = task;
-                t.gm = gm;
-                t.res = res
-                t.start()
-                active_threads.append(t)
+        while not global_task_queue.empty() or active_threads:
+            for gm in gpu_managers:
+                gm.try_scale_up(print_lock)
+                while gm.can_accept_task() and not global_task_queue.empty():
+                    task = global_task_queue.get()
+                    gm.active_tasks += 1
+                    res = {}
+                    t = threading.Thread(target=inference_worker, args=(task, gm, res))
+                    t.task = task;
+                    t.gm = gm;
+                    t.res = res
+                    t.start()
+                    active_threads.append(t)
 
-        done = [t for t in active_threads if not t.is_alive()]
-        for t in done:
-            active_threads.remove(t)
-            t.gm.active_tasks -= 1
-            status = t.res.get('status', 'error')
+            done = [t for t in active_threads if not t.is_alive()]
+            for t in done:
+                active_threads.remove(t)
+                t.gm.active_tasks -= 1
+                status = t.res.get('status', 'error')
+                if status == 'oom':
+                    t.gm.handle_oom(print_lock);
+                    global_task_queue.put(t.task)
+                else:
+                    completed_tasks += 1
+                    if total_tasks > 0: report_progress("video_processing", 15 + (completed_tasks / total_tasks) * 75)
+                    try:
+                        shutil.rmtree(t.task['in_dir']); shutil.rmtree(t.task['mk_dir'])
+                    except:
+                        pass
+            time.sleep(0.5)
 
-            if status == 'oom':
-                t.gm.handle_oom(print_lock)
-                global_task_queue.put(t.task)
-            else:
-                completed_tasks += 1
-                if total_tasks > 0:
-                    report_progress("processing", 15 + (completed_tasks / total_tasks) * 75)
-                try:
-                    shutil.rmtree(t.task['in_dir']); shutil.rmtree(t.task['mk_dir'])
-                except:
-                    pass
-        time.sleep(0.5)
+        print("\n[Step 6] 图片合并...")
+        report_progress("finalizing", 90)
+        final_dir = os.path.join(args.workspace, "full_frames_final")
+        setup_dirs(final_dir)
+        m_tasks = [
+            (i, f, frames_dir, final_dir, [pl for pl in all_merge_tasks if pl['start_frame'] <= i < pl['end_frame']])
+            for i, f in enumerate(frame_files)]
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            list(ex.map(merge_worker, m_tasks))
 
-    print("\n[Step 6] 图片合并...")
-    report_progress("merging", 90)
-    final_dir = os.path.join(args.workspace, "full_frames_final")
-    setup_dirs(final_dir)
-    m_tasks = []
-    for i, f in enumerate(frame_files):
-        p = [pl for pl in all_merge_tasks if pl['start_frame'] <= i < pl['end_frame']]
-        m_tasks.append((i, f, frames_dir, final_dir, p))
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        list(ex.map(merge_worker, m_tasks))
+        print("\n[Step 7] 渲染无字幕的基础底版视频...")
+        temp_no_sub = os.path.join(args.workspace, "temp_clean_video.mp4")
+        render_video(final_dir, args.video, temp_no_sub, fps)
+        report_progress("subtitle_burning", 95)
+    else:
+        # 如果根本没画水印消除区域，也能够直接进入字幕系统
+        print("\n[INFO] 未检测到去水印标注，将使用原视频直接进入字幕处理流程。")
+        temp_no_sub = args.video
 
-    print("\n[Step 7] 渲染视频...")
-    report_progress("rendering", 95)
-    render_video(final_dir, args.video, os.path.join(args.workspace, args.output_video), fps)
+    # 【终极工序】字幕与翻译系统
+    final_output = os.path.join(args.workspace, args.output_video)
+    process_audio_and_subtitles(args.video, temp_no_sub, final_output, args.workspace, subtitle_pos, img_w, img_h,
+                                threading.Lock())
+
     report_progress("completed", 100)
 
 

@@ -1,14 +1,12 @@
 let currentTaskId = null;
 let statusInterval = null;
 
-// Mask制作相关变量
 let isDrawingMode = false;
 let isDrawing = false;
 let startX, startY;
 let currentRect = null;
 let maskRects = [];
 let boxIdCounter = 0;
-// 其他区域直接自增 ID，不再关联时间面板
 let otherRegionCounter = 0;
 
 let currentVideoFilename = '';
@@ -16,7 +14,7 @@ let uploadedMaskFilename = null;
 
 let globalVideoDuration = 0;
 let currentExtractTimeStr = "00:00:00";
-
+let isMnSubEnabled = false; // 【新增】记录是否开启了蒙文字幕模式
 let samSession = { active: false, pos: [], neg: [], polygons: null, history: [] };
 
 let imageScale = 1;
@@ -105,7 +103,9 @@ async function downloadVideo() {
         const response = await fetch(`/api/tasks/${currentTaskId}/download-video`);
         if (response.ok) {
             const blob = await response.blob(); const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a'); a.href = url; a.download = '处理后纯净视频.mp4';
+
+            const a = document.createElement('a'); a.href = url;
+            a.download = isMnSubEnabled ? '处理后蒙文字幕视频.mp4' : '处理后纯净视频.mp4';
             document.body.appendChild(a); a.click(); window.URL.revokeObjectURL(url); document.body.removeChild(a);
         }
     } catch (error) {}
@@ -201,7 +201,15 @@ function initDrawing() {
         const type = document.getElementById('regionType').value;
         const mode = document.getElementById('drawMode').value;
 
-        if (mode === 'magic') {
+        // 【保留】字幕位置框唯一性拦截
+        if (type === 'sub_pos') {
+            if (maskRects.some(b => b.type === 'sub_pos')) {
+                alert('⚠️ 规则限制：只能绘制一个【蒙文字幕位置】的框！如果想修改，请先撤销或删除旧框。');
+                isDrawingMode = false; toggleDrawingMode(false); return;
+            }
+        }
+
+        if (mode === 'magic' && type !== 'sub_pos') {
             samSession.active = true;
             document.getElementById('commit-sam-btn').style.display = 'block';
             document.getElementById('undo-btn').innerHTML = '<i class="fas fa-rotate-left me-1"></i>撤销点击';
@@ -298,7 +306,7 @@ document.getElementById('commit-sam-btn').addEventListener('click', () => {
 });
 
 function getRegionTypeName(type) {
-    const map = { 'logo': '台标', 'title': '剧名', 'subtitle': '字幕', 'other': '自定义区域' };
+    const map = { 'logo': '台标', 'title': '剧名', 'subtitle': '字幕', 'other': '自定义区域', 'sub_pos': '蒙文字幕投放区' };
     return map[type] || type;
 }
 
@@ -376,7 +384,6 @@ function redrawCanvas(canvasElement) {
 
 function drawBox(ctx, box, isDashed = false) {
     if (box.mode === 'magic' && box.polygons) {
-        // 色彩模式给不同的颜色以作区分
         const color = box.extractMode === 'solid' ? '52, 152, 219' : '230, 126, 34';
         ctx.strokeStyle = `rgb(${color})`; ctx.lineWidth = 2; ctx.fillStyle = `rgba(${color}, 0.3)`;
         box.polygons.forEach(poly => {
@@ -390,7 +397,11 @@ function drawBox(ctx, box, isDashed = false) {
         return;
     }
     const isLarge = box.mode === 'large';
-    ctx.strokeStyle = '#e74c3c'; ctx.lineWidth = 2; ctx.fillStyle = 'rgba(231, 76, 60, 0.15)';
+
+    const strokeColor = box.type === 'sub_pos' ? '#9b59b6' : '#e74c3c';
+    const fillColor = box.type === 'sub_pos' ? 'rgba(155, 89, 182, 0.15)' : 'rgba(231, 76, 60, 0.15)';
+
+    ctx.strokeStyle = strokeColor; ctx.lineWidth = 2; ctx.fillStyle = fillColor;
     if (isDashed) ctx.setLineDash([5, 5]); else ctx.setLineDash([]);
     ctx.fillRect(box.x, box.y, box.width, box.height); ctx.strokeRect(box.x, box.y, box.width, box.height);
 
@@ -475,7 +486,9 @@ function startStatusPolling() {
             const response = await fetch(`/api/tasks/${currentTaskId}`);
             const task = await response.json();
             document.getElementById('progress-bar').style.width = task.progress + '%';
-            const stageMap = { 'initialization': '分配算力', 'scene_detection': '光流分析', 'mask_generation': '渲染掩码', 'video_processing': '分布式推理', 'finalizing': '编码合成', 'completed': '清洗完毕' };
+
+            // 【新增】加入字幕生成阶段中文提示
+            const stageMap = { 'initialization': '分配算力', 'scene_detection': '光流分析', 'mask_generation': '渲染掩码', 'video_processing': '分布式推理', 'finalizing': '画面合成', 'subtitle_burning': '语音提取翻译及烧录', 'completed': '全自动产线清洗完毕' };
             document.getElementById('progress-text').textContent = (stageMap[task.current_stage] || '处理中') + ' ' + task.progress + '%';
             document.getElementById('download-video-btn').disabled = (task.status !== 'completed');
             if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') { clearInterval(statusInterval); document.getElementById('cancel-btn').disabled = true; }
@@ -491,6 +504,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('download-video-btn').addEventListener('click', downloadVideo);
     document.getElementById('extract-frame-btn').addEventListener('click', extractFrame);
     document.getElementById('start-drawing-btn').addEventListener('click', () => toggleDrawingMode());
+    document.getElementById('undo-btn').addEventListener('click', undoLastBox);
     document.getElementById('clear-all-btn').addEventListener('click', clearAllBoxes);
     document.getElementById('generate-json-btn').addEventListener('click', generateJSON);
     document.getElementById('source-video').addEventListener('change', function() { currentVideoFilename = this.value; });
@@ -499,7 +513,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const modeSelect = document.getElementById('drawMode');
 
     regionSelect.addEventListener('change', function() {
-        modeSelect.value = 'large';
+        if (this.value === 'sub_pos') { modeSelect.value = 'large'; }
+        else { modeSelect.value = 'large'; }
         modeSelect.dispatchEvent(new Event('change'));
     });
 
@@ -507,5 +522,50 @@ document.addEventListener('DOMContentLoaded', function() {
         const isMagic = this.value === 'magic';
         document.getElementById('magic-hint').style.display = isMagic ? 'block' : 'none';
         document.getElementById('magic-mode-container').style.display = isMagic ? 'block' : 'none';
+
+        if (isMagic && regionSelect.value === 'sub_pos') {
+            alert('⚠️ 蒙文字幕投放区仅用于定位，不支持魔法棒抠图，已为您自动切回红框。');
+            this.value = 'large';
+            this.dispatchEvent(new Event('change'));
+        }
+    });
+    // =================================================================
+    // 【新增】蒙文字幕开关按钮的交互逻辑
+    // =================================================================
+    document.getElementById('enable-mn-sub-btn').addEventListener('click', function() {
+        isMnSubEnabled = !isMnSubEnabled;
+        const subOption = document.getElementById('sub-pos-option');
+        const downloadText = document.getElementById('download-text');
+        const regionSelect = document.getElementById('regionType');
+
+        if (isMnSubEnabled) {
+            // 开启状态：显示下拉选项，改变下载文案，按钮变色
+            subOption.style.display = 'block';
+            subOption.removeAttribute('hidden');
+            downloadText.innerText = '下载处理后的蒙文字幕视频';
+            this.classList.replace('btn-outline-success', 'btn-success');
+            this.innerHTML = '<i class="fas fa-times-circle me-1"></i>取消蒙文字幕';
+        } else {
+            // 关闭状态：隐藏下拉选项，恢复纯净文案，按钮复原
+            subOption.style.display = 'none';
+            subOption.setAttribute('hidden', 'true');
+            downloadText.innerText = '下载处理后的纯净视频';
+            this.classList.replace('btn-success', 'btn-outline-success');
+            this.innerHTML = '<i class="fas fa-language me-1"></i>添加蒙文字幕';
+
+            // 防呆机制 1：如果当前正好选中了蒙文选项，自动切回台标区域
+            if (regionSelect.value === 'sub_pos') {
+                regionSelect.value = 'logo';
+                regionSelect.dispatchEvent(new Event('change'));
+            }
+
+            // 防呆机制 2：如果用户已经画了蒙文框，关闭开关时自动清除那个框
+            const hasSubBox = maskRects.some(b => b.type === 'sub_pos');
+            if (hasSubBox) {
+                maskRects = maskRects.filter(b => b.type !== 'sub_pos');
+                redrawCanvas();
+                updateLayerPanel();
+            }
+        }
     });
 });
