@@ -504,7 +504,6 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('download-video-btn').addEventListener('click', downloadVideo);
     document.getElementById('extract-frame-btn').addEventListener('click', extractFrame);
     document.getElementById('start-drawing-btn').addEventListener('click', () => toggleDrawingMode());
-    document.getElementById('undo-btn').addEventListener('click', undoLastBox);
     document.getElementById('clear-all-btn').addEventListener('click', clearAllBoxes);
     document.getElementById('generate-json-btn').addEventListener('click', generateJSON);
     document.getElementById('source-video').addEventListener('change', function() { currentVideoFilename = this.value; });
