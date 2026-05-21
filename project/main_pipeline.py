@@ -97,68 +97,87 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080, time_ranges
                 all_y.extend(pts[:, 1])
         if not all_x or not all_y: continue
 
-        nx1, ny1 = max(0, min(all_x) - padding), max(0, min(all_y) - padding)
-        nx2, ny2 = min(img_w, max(all_x) + padding), min(img_h, max(all_y) + padding)
+        # 确立不可侵犯的基础原框
+        bx1, by1 = max(0, min(all_x)), max(0, min(all_y))
+        bx2, by2 = min(img_w, max(all_x)), min(img_h, max(all_y))
+
+        # 初始的外扩框（如果没有任何碰撞的情况）
+        cx1, cy1 = max(0, bx1 - padding), max(0, by1 - padding)
+        cx2, cy2 = min(img_w, bx2 + padding), min(img_h, by2 + padding)
 
         plan_tr = {key: time_ranges[key]} if key in time_ranges else {}
-        boxes.append({"keys": [key], "crop_coords": [int(nx1), int(ny1), int(nx2), int(ny2)],
-                      "original_poses": {key: coords_list}, "time_ranges": plan_tr})
+        boxes.append({
+            "keys": [key],
+            "base_coords": [bx1, by1, bx2, by2],
+            "crop_coords": [cx1, cy1, cx2, cy2],
+            "original_poses": {key: coords_list},
+            "time_ranges": plan_tr
+        })
 
     # =================================================================
-    # 【核心修复】：保留边缘截断逻辑，绝不跨区合并原坐标数据！
+    # 【核心逻辑】：不合并区域！仅在外扩空间发生重叠时，从间隙的绝对中点砌墙截断
     # =================================================================
-    adjusted, iterations = True, 0
-    while adjusted and iterations < 10:
-        adjusted = False
-        iterations += 1
-        for i in range(len(boxes)):
-            cx1, cy1, cx2, cy2 = boxes[i]["crop_coords"]
-            for j in range(i + 1, len(boxes)):
-                ox1, oy1, ox2, oy2 = boxes[j]["crop_coords"]
-                if not (cx2 <= ox1 or cx1 >= ox2 or cy2 <= oy1 or cy1 >= oy2):
-                    # 发生重叠，按照你规划的逻辑从中间截断
-                    if abs((cx1 + cx2) / 2 - (ox1 + ox2) / 2) > abs((cy1 + cy2) / 2 - (oy1 + oy2) / 2):
-                        # 水平截断
-                        if cx1 < ox1:
-                            mid = (ox1 + cx2) // 2;
-                            cx2 = mid;
-                            ox1 = mid
-                        else:
-                            mid = (cx1 + ox2) // 2;
-                            cx1 = mid;
-                            ox2 = mid
-                    else:
-                        # 垂直截断
-                        if cy1 < oy1:
-                            mid = (oy1 + cy2) // 2;
-                            cy2 = mid;
-                            oy1 = mid
-                        else:
-                            mid = (cy1 + oy2) // 2;
-                            cy1 = mid;
-                            oy2 = mid
-
-                    # 仅更新被削减的外扩边界
-                    boxes[i]["crop_coords"] = [cx1, cy1, cx2, cy2]
-                    boxes[j]["crop_coords"] = [ox1, oy1, ox2, oy2]
-
-                    # 【注意】：我们彻底删掉了这里合并 keys 和 original_poses 的错误代码！
-                    # 让两个区域保持严格独立，不再产生跨界残影。
-                    adjusted = True
-
-    # 16像素对齐
     for i in range(len(boxes)):
-        nx1, ny1, nx2, ny2 = boxes[i]["crop_coords"]
-        pad_w, pad_h = (16 - ((nx2 - nx1) % 16)) % 16, (16 - ((ny2 - ny1) % 16)) % 16
-        if nx2 + pad_w <= img_w:
-            nx2 += pad_w
+        for j in range(i + 1, len(boxes)):
+            b1 = boxes[i]["base_coords"]
+            b2 = boxes[j]["base_coords"]
+
+            # 判断两个原始基准框在坐标轴上是否有物理交集
+            x_overlap = not (b1[2] <= b2[0] or b1[0] >= b2[2])
+            y_overlap = not (b1[3] <= b2[1] or b1[1] >= b2[3])
+
+            # 1. 仅在 X 轴上分开（左右排列）
+            if not x_overlap:
+                if b1[2] <= b2[0]:  # box_i 在左，box_j 在右
+                    mid_x = (b1[2] + b2[0]) / 2.0
+                    boxes[i]["crop_coords"][2] = min(boxes[i]["crop_coords"][2], mid_x)
+                    boxes[j]["crop_coords"][0] = max(boxes[j]["crop_coords"][0], mid_x)
+                elif b2[2] <= b1[0]:  # box_j 在左，box_i 在右
+                    mid_x = (b2[2] + b1[0]) / 2.0
+                    boxes[j]["crop_coords"][2] = min(boxes[j]["crop_coords"][2], mid_x)
+                    boxes[i]["crop_coords"][0] = max(boxes[i]["crop_coords"][0], mid_x)
+
+            # 2. 仅在 Y 轴上分开（上下排列）
+            if not y_overlap:
+                if b1[3] <= b2[1]:  # box_i 在上，box_j 在下
+                    mid_y = (b1[3] + b2[1]) / 2.0
+                    boxes[i]["crop_coords"][3] = min(boxes[i]["crop_coords"][3], mid_y)
+                    boxes[j]["crop_coords"][1] = max(boxes[j]["crop_coords"][1], mid_y)
+                elif b2[3] <= b1[1]:  # box_j 在上，box_i 在下
+                    mid_y = (b2[3] + b1[1]) / 2.0
+                    boxes[j]["crop_coords"][3] = min(boxes[j]["crop_coords"][3], mid_y)
+                    boxes[i]["crop_coords"][1] = max(boxes[i]["crop_coords"][1], mid_y)
+
+            # 3. 如果 x_overlap 和 y_overlap 同时为真，说明用户画的红框本身就已经重合了。
+            # 此时绝不干涉裁剪，任由它们自然外扩并生成两个交叠的任务图层，确保原区域不缺失。
+
+    # 收尾工序：保证截断后的坐标依然有效，并满足 ProPainter 16像素边界要求
+    for i in range(len(boxes)):
+        cx1, cy1, cx2, cy2 = boxes[i]["crop_coords"]
+        bx1, by1, bx2, by2 = boxes[i]["base_coords"]
+
+        cx1, cy1, cx2, cy2 = int(cx1), int(cy1), int(cx2), int(cy2)
+
+        # 安全断言：无论如何截断，外扩区域都绝对不能切到最初画好的红框内部！
+        cx1 = max(0, min(cx1, int(bx1)))
+        cy1 = max(0, min(cy1, int(by1)))
+        cx2 = min(img_w, max(cx2, int(bx2)))
+        cy2 = min(img_h, max(cy2, int(by2)))
+
+        pad_w = (16 - ((cx2 - cx1) % 16)) % 16
+        pad_h = (16 - ((cy2 - cy1) % 16)) % 16
+
+        if cx2 + pad_w <= img_w:
+            cx2 += pad_w
         else:
-            nx1 = max(0, nx1 - pad_w)
-        if ny2 + pad_h <= img_h:
-            ny2 += pad_h
+            cx1 = max(0, cx1 - pad_w)
+
+        if cy2 + pad_h <= img_h:
+            cy2 += pad_h
         else:
-            ny1 = max(0, ny1 - pad_h)
-        boxes[i]["crop_coords"] = [int(nx1), int(ny1), int(nx2), int(ny2)]
+            cy1 = max(0, cy1 - pad_h)
+
+        boxes[i]["crop_coords"] = [int(cx1), int(cy1), int(cx2), int(cy2)]
 
     return boxes
 
@@ -633,7 +652,7 @@ def main():
         def inference_worker(task, gpu_manager, result_dict):
             cmd = [sys.executable, args.model_path, "--video", task['in_dir'], "--mask", task['mk_dir'], "--output",
                    task['out_dir'], "--fp16", "--mask_dilation", "4", "--flow_mask_dilation", "20", "--raft_iter", "20",
-                   "--ref_stride", "10", "--subvideo_length", "30"]
+                   "--ref_stride", "10", "--subvideo_length", "60"]
             env = os.environ.copy();
             env['CUDA_VISIBLE_DEVICES'] = gpu_manager.gpu_id
             tag = f"[GPU {gpu_manager.gpu_id} | {task['region']} | {task['seg_name']}]"
