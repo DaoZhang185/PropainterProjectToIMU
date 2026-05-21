@@ -89,11 +89,11 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080, time_ranges
         all_x, all_y = [], []
         for item in coords_list:
             if len(item) == 4 and isinstance(item[0], (int, float)):
-                all_x.extend([item[0], item[2]]);
+                all_x.extend([item[0], item[2]])
                 all_y.extend([item[1], item[3]])
             elif isinstance(item, list) and isinstance(item[0], (list, tuple)):
                 pts = np.array(item)
-                all_x.extend(pts[:, 0]);
+                all_x.extend(pts[:, 0])
                 all_y.extend(pts[:, 1])
         if not all_x or not all_y: continue
 
@@ -104,31 +104,49 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080, time_ranges
         boxes.append({"keys": [key], "crop_coords": [int(nx1), int(ny1), int(nx2), int(ny2)],
                       "original_poses": {key: coords_list}, "time_ranges": plan_tr})
 
+    # =================================================================
+    # 【核心修复】：保留边缘截断逻辑，绝不跨区合并原坐标数据！
+    # =================================================================
     adjusted, iterations = True, 0
     while adjusted and iterations < 10:
-        adjusted = False;
+        adjusted = False
         iterations += 1
         for i in range(len(boxes)):
             cx1, cy1, cx2, cy2 = boxes[i]["crop_coords"]
             for j in range(i + 1, len(boxes)):
                 ox1, oy1, ox2, oy2 = boxes[j]["crop_coords"]
                 if not (cx2 <= ox1 or cx1 >= ox2 or cy2 <= oy1 or cy1 >= oy2):
+                    # 发生重叠，按照你规划的逻辑从中间截断
                     if abs((cx1 + cx2) / 2 - (ox1 + ox2) / 2) > abs((cy1 + cy2) / 2 - (oy1 + oy2) / 2):
+                        # 水平截断
                         if cx1 < ox1:
-                            mid = (ox1 + cx2) // 2; cx2 = mid; ox1 = mid
+                            mid = (ox1 + cx2) // 2;
+                            cx2 = mid;
+                            ox1 = mid
                         else:
-                            mid = (cx1 + ox2) // 2; cx1 = mid; ox2 = mid
+                            mid = (cx1 + ox2) // 2;
+                            cx1 = mid;
+                            ox2 = mid
                     else:
+                        # 垂直截断
                         if cy1 < oy1:
-                            mid = (oy1 + cy2) // 2; cy2 = mid; oy1 = mid
+                            mid = (oy1 + cy2) // 2;
+                            cy2 = mid;
+                            oy1 = mid
                         else:
-                            mid = (cy1 + oy2) // 2; cy1 = mid; oy2 = mid
-                    boxes[i]["crop_coords"], boxes[j]["crop_coords"] = [cx1, cy1, cx2, cy2], [ox1, oy1, ox2, oy2]
-                    boxes[i]["keys"].extend(boxes[j]["keys"])
-                    boxes[i]["original_poses"].update(boxes[j]["original_poses"])
-                    boxes[i]["time_ranges"].update(boxes[j]["time_ranges"])
+                            mid = (cy1 + oy2) // 2;
+                            cy1 = mid;
+                            oy2 = mid
+
+                    # 仅更新被削减的外扩边界
+                    boxes[i]["crop_coords"] = [cx1, cy1, cx2, cy2]
+                    boxes[j]["crop_coords"] = [ox1, oy1, ox2, oy2]
+
+                    # 【注意】：我们彻底删掉了这里合并 keys 和 original_poses 的错误代码！
+                    # 让两个区域保持严格独立，不再产生跨界残影。
                     adjusted = True
 
+    # 16像素对齐
     for i in range(len(boxes)):
         nx1, ny1, nx2, ny2 = boxes[i]["crop_coords"]
         pad_w, pad_h = (16 - ((nx2 - nx1) % 16)) % 16, (16 - ((ny2 - ny1) % 16)) % 16
@@ -141,6 +159,7 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080, time_ranges
         else:
             ny1 = max(0, ny1 - pad_h)
         boxes[i]["crop_coords"] = [int(nx1), int(ny1), int(nx2), int(ny2)]
+
     return boxes
 
 
@@ -373,56 +392,56 @@ def process_audio_and_subtitles(original_video, temp_clean_video, final_output_v
     with print_lock:
         print("\n[Step 8] 激活语音提取、翻译与蒙文字幕渲染烧录系统...")
 
-        # ============== 从这里开始 ==============
-        # 1. 抽取音频 (修改为与原视频同名)
-        audio_path = os.path.join(subtitle_dir, f"{video_basename}.wav")
+    # ============== 1. 抽取音频 ==============
+    audio_path = os.path.join(subtitle_dir, f"{video_basename}.wav")
+    with print_lock:
+        print("    >> 提取视频音轨...")
+
+    subprocess.run(['ffmpeg', '-y', '-i', original_video, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+                    audio_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if not os.path.exists(audio_path):
+        with print_lock: print("    ⚠ 原视频无声轨，跳过字幕生成。")
+        shutil.move(temp_clean_video, final_output_video)
+        return False
+
+    # ============== 2. 调用本地 Whisper turbo ==============
+    with print_lock:
+        print("    >> 唤醒 Whisper 提取文字...")
+
+    subprocess.run(
+        ['whisper', audio_path, '--model', 'turbo', '--output_format', 'srt', '--output_dir', subtitle_dir],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    final_srt = os.path.join(subtitle_dir, f"{video_basename}.srt")
+    if not os.path.exists(final_srt):
+        with print_lock: print("    ⚠ Whisper 生成失败，将直接输出纯净视频。")
+        shutil.move(temp_clean_video, final_output_video)
+        return False
+
+    # ============== 3. 动态读取 API 配置文件并执行翻译封装 ==============
+    with print_lock:
+        print("    >> 触发奥云翻译流与高阶 ASS 特效阵列装配...")
+
+    mn_ass_path = os.path.join(subtitle_dir, f"{video_basename}_mn.ass")
+
+    config_path = os.path.join(root_dir, "project", "api_configure", "api_configuration.json")
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            api_config = json.load(f)
+        pid = api_config.get("pid", "")
+        appkey = api_config.get("appKey", "")
+    except Exception as e:
         with print_lock:
-            print("    >> 提取视频音轨...")
-        subprocess.run(['ffmpeg', '-y', '-i', original_video, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
-                        audio_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"    ⚠ 读取配置文件失败，请检查路径或JSON格式: {e}")
+        pid, appkey = "", ""
 
-        if not os.path.exists(audio_path):
-            with print_lock: print("    ⚠ 原视频无声轨，跳过字幕生成。")
-            shutil.move(temp_clean_video, final_output_video)
-            return False
+    convert_srt_to_ass_vertical(final_srt, mn_ass_path, subtitle_pos, img_w, img_h, pid, appkey)
 
-        # 2. 调用本地 Whisper turbo
-        with print_lock:
-            print("    >> 唤醒 Whisper 提取文字...")
-        subprocess.run(
-            ['whisper', audio_path, '--model', 'turbo', '--output_format', 'srt', '--output_dir', subtitle_dir],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        # Whisper 生成的字幕会默认与输入的 wav 文件同名
-        final_srt = os.path.join(subtitle_dir, f"{video_basename}.srt")
-        if not os.path.exists(final_srt):
-            with print_lock: print("    ⚠ Whisper 生成失败，将直接输出纯净视频。")
-            shutil.move(temp_clean_video, final_output_video)
-            return False
-
-        # 3. 动态读取 API 配置文件并执行翻译封装
-        with print_lock:
-            print("    >> 触发奥云翻译流与高阶 ASS 特效阵列装配...")
-        mn_ass_path = os.path.join(subtitle_dir, f"{video_basename}_mn.ass")
-
-        config_path = os.path.join(root_dir, "project", "api_configure", "api_configuration.json")
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                api_config = json.load(f)
-            pid = api_config.get("pid", "")
-            appkey = api_config.get("appKey", "")
-        except Exception as e:
-            with print_lock:
-                print(f"    ⚠ 读取配置文件失败，请检查路径或JSON格式: {e}")
-            pid, appkey = "", ""
-
-        convert_srt_to_ass_vertical(final_srt, mn_ass_path, subtitle_pos, img_w, img_h, pid, appkey)
-        # ============== 到这里结束，下面保留原来的 FFmpeg 挂载逻辑 ==============
-
-    # 4. FFmpeg 采用【相对路径】挂载字体及字幕，终极压制
+    # ============== 4. FFmpeg 挂载字幕并终极压制 ==============
     with print_lock:
         print("    >> 挂载字体，烧录字幕并封包最终母带...")
-    # 字体相对工作路径
+
     fonts_dir_relative = "fronts"
     ass_relative = os.path.relpath(mn_ass_path, current_dir).replace('\\', '/')
 
@@ -434,6 +453,7 @@ def process_audio_and_subtitles(original_video, temp_clean_video, final_output_v
     ]
 
     res = subprocess.run(cmd, capture_output=True, text=True)
+
     if os.path.exists(final_output_video):
         with print_lock:
             print(f"    ✓ 定点旋转字幕烧录成功！最终成品路径: {final_output_video}")
