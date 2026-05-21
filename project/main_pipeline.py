@@ -401,14 +401,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         return False
 
 
-def process_audio_and_subtitles(original_video, temp_clean_video, final_output_video, workspace, subtitle_pos, img_w,
-                                img_h, print_lock):
-    """
-    全自动：抽音轨 -> Whisper出SRT -> 调接口译蒙文 -> 编组定点ASS格式 -> FFmpeg挂载烧录。
-    """
+def process_audio_and_subtitles(original_video, video_source, is_image_sequence, final_output_video, workspace,
+                                subtitle_pos, img_w, img_h, print_lock, fps):
+    # 失败回退函数：如果在提取语音/生成字幕时出错，至少保证把已经修好的画面输出成无字幕视频
+    def fallback_encode():
+        if is_image_sequence:
+            cmd = ['ffmpeg', '-y', '-f', 'image2', '-framerate', str(fps),
+                   '-i', os.path.join(video_source, 'frame_%04d.png'),
+                   '-i', original_video, '-vf', "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                   '-map', '0:v:0', '-map', '1:a:0?',
+                   '-c:v', 'libx264', '-crf', '18', '-c:a', 'copy', '-shortest', final_output_video]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            shutil.copy(original_video, final_output_video)
+
     if not subtitle_pos:
-        # 用户没画框，直接封版
-        shutil.move(temp_clean_video, final_output_video)
+        with print_lock: print("\n[Step 7] 未检测到蒙文字幕定位框，直接渲染最终纯净视频...")
+        fallback_encode()
         return True
 
     subtitle_dir = os.path.join(workspace, "subtitle")
@@ -416,41 +425,34 @@ def process_audio_and_subtitles(original_video, temp_clean_video, final_output_v
     video_basename = os.path.splitext(os.path.basename(original_video))[0]
 
     with print_lock:
-        print("\n[Step 8] 激活语音提取、翻译与蒙文字幕渲染烧录系统...")
+        print("\n[Step 7] 激活语音提取、翻译与蒙文字幕【单次高速压制】系统...")
 
-    # ============== 1. 抽取音频 ==============
     audio_path = os.path.join(subtitle_dir, f"{video_basename}.wav")
     with print_lock:
         print("    >> 提取视频音轨...")
-
-    subprocess.run(['ffmpeg', '-y', '-i', original_video, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
-                    audio_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        ['ffmpeg', '-y', '-i', original_video, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', audio_path],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     if not os.path.exists(audio_path):
         with print_lock: print("    ⚠ 原视频无声轨，跳过字幕生成。")
-        shutil.move(temp_clean_video, final_output_video)
+        fallback_encode()
         return False
 
-    # ============== 2. 调用本地 Whisper turbo ==============
     with print_lock:
         print("    >> 唤醒 Whisper 提取文字...")
-
-    subprocess.run(
-        ['whisper', audio_path, '--model', 'turbo', '--output_format', 'srt', '--output_dir', subtitle_dir],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(['whisper', audio_path, '--model', 'turbo', '--output_format', 'srt', '--output_dir', subtitle_dir],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     final_srt = os.path.join(subtitle_dir, f"{video_basename}.srt")
     if not os.path.exists(final_srt):
-        with print_lock: print("    ⚠ Whisper 生成失败，将直接输出纯净视频。")
-        shutil.move(temp_clean_video, final_output_video)
+        with print_lock: print("    ⚠ Whisper 生成失败，将输出无字幕视频。")
+        fallback_encode()
         return False
 
-    # ============== 3. 动态读取 API 配置文件并执行翻译封装 ==============
     with print_lock:
         print("    >> 触发奥云翻译流与高阶 ASS 特效阵列装配...")
-
     mn_ass_path = os.path.join(subtitle_dir, f"{video_basename}_mn.ass")
-
     config_path = os.path.join(root_dir, "project", "api_configure", "api_configuration.json")
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -458,36 +460,43 @@ def process_audio_and_subtitles(original_video, temp_clean_video, final_output_v
         pid = api_config.get("pid", "")
         appkey = api_config.get("appKey", "")
     except Exception as e:
-        with print_lock:
-            print(f"    ⚠ 读取配置文件失败，请检查路径或JSON格式: {e}")
         pid, appkey = "", ""
 
     convert_srt_to_ass_vertical(final_srt, mn_ass_path, subtitle_pos, img_w, img_h, pid, appkey)
 
-    # ============== 4. FFmpeg 挂载字幕并终极压制 ==============
     with print_lock:
-        print("    >> 挂载字体，烧录字幕并封包最终母带...")
-
+        print("    >> 挂载图片序列与翻译字幕，正在进行终极直出压制...")
     fonts_dir_relative = "fronts"
     ass_relative = os.path.relpath(mn_ass_path, current_dir).replace('\\', '/')
 
-    cmd = [
-        'ffmpeg', '-y', '-i', temp_clean_video,
-        '-vf', f"ass='{ass_relative}':fontsdir='{fonts_dir_relative}'",
-        '-c:a', 'copy', '-c:v', 'libx264', '-crf', '18',
-        final_output_video
-    ]
+    # 核心优化：彻底告别双重编码，直接把清洗完成的原始图片帧挂上字幕压制为 MP4！
+    if is_image_sequence:
+        cmd = [
+            'ffmpeg', '-y', '-f', 'image2', '-framerate', str(fps),
+            '-i', os.path.join(video_source, 'frame_%04d.png'),
+            '-i', original_video,
+            '-vf', f"pad=ceil(iw/2)*2:ceil(ih/2)*2,ass='{ass_relative}':fontsdir='{fonts_dir_relative}'",
+            '-map', '0:v:0', '-map', '1:a:0?',
+            '-c:a', 'copy', '-c:v', 'libx264', '-crf', '18', '-shortest',
+            final_output_video
+        ]
+    else:
+        cmd = [
+            'ffmpeg', '-y', '-i', video_source,
+            '-vf', f"ass='{ass_relative}':fontsdir='{fonts_dir_relative}'",
+            '-c:a', 'copy', '-c:v', 'libx264', '-crf', '18',
+            final_output_video
+        ]
 
     res = subprocess.run(cmd, capture_output=True, text=True)
-
     if os.path.exists(final_output_video):
         with print_lock:
-            print(f"    ✓ 定点旋转字幕烧录成功！最终成品路径: {final_output_video}")
+            print(f"    ✓ 定点旋转字幕烧录成功！成品路径: {final_output_video}")
         return True
     else:
         with print_lock:
-            print(f"    ✗ 字幕烧录失败: {res.stderr}")
-        shutil.move(temp_clean_video, final_output_video)
+            print(f"    ✗ 字幕烧录失败，启用安全回退方案: {res.stderr}")
+        fallback_encode()
         return False
 
 
@@ -723,19 +732,20 @@ def main():
         with ThreadPoolExecutor(max_workers=8) as ex:
             list(ex.map(merge_worker, m_tasks))
 
-        print("\n[Step 7] 渲染无字幕的基础底版视频...")
-        temp_no_sub = os.path.join(args.workspace, "temp_clean_video.mp4")
-        render_video(final_dir, args.video, temp_no_sub, fps)
+        # 【核心优化】直接删除原有的 Step 7 (纯净视频压制)！直接无缝进入终极压制。
         report_progress("subtitle_burning", 95)
+        video_source = final_dir
+        is_image_sequence = True
     else:
-        # 如果根本没画水印消除区域，也能够直接进入字幕系统
+        # 如果根本没画水印消除区域
         print("\n[INFO] 未检测到去水印标注，将使用原视频直接进入字幕处理流程。")
-        temp_no_sub = args.video
+        video_source = args.video
+        is_image_sequence = False
 
-    # 【终极工序】字幕与翻译系统
+        # 【终极工序】字幕与翻译系统 (直接接收图片流，单次压制，性能翻倍！)
     final_output = os.path.join(args.workspace, args.output_video)
-    process_audio_and_subtitles(args.video, temp_no_sub, final_output, args.workspace, subtitle_pos, img_w, img_h,
-                                threading.Lock())
+    process_audio_and_subtitles(args.video, video_source, is_image_sequence, final_output, args.workspace, subtitle_pos,
+                                img_w, img_h, threading.Lock(), fps)
 
     report_progress("completed", 100)
 
