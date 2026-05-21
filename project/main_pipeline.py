@@ -315,16 +315,27 @@ def translate_to_mongolian(text, pid="YOUR_PID", appKey="YOUR_APPKEY"):
 
 
 def convert_srt_to_ass_vertical(srt_path, ass_path, subtitle_pos, img_w, img_h, pid, appkey):
-    """
-    解析 SRT，逐块发起 API 翻译，最终封装为带绝对坐标、向右旋转 90°(-90/270) 的高阶 ASS 特效字幕文件。
-    """
     x1, y1, x2, y2 = subtitle_pos
-    # 锚点偏移量微调
     pos_x = x1 + 10
     pos_y = y1 + 10
 
-    # Alignment=7 代表绝对坐标基准为文字的【左上角】
-    # Angle=270 (-90度) 能够让蒙文垂直排列
+    # 1. 设置默认样式
+    font_size = "24"
+    primary_color = "&H00FFFFFF"
+    outline_color = "&H00000000"
+
+    # 2. 尝试读取配置文件
+    config_path = os.path.join(root_dir, "project", "fronts", "font-configuration.json")
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+                font_size = str(cfg.get("FontSize", font_size))
+                primary_color = cfg.get("PrimaryColour", primary_color)
+                outline_color = cfg.get("OutlineColour", outline_color)
+        except Exception as e:
+            print(f"    ⚠ 读取字体配置失败, 使用默认样式: {e}")
+
     ass_header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {img_w}
@@ -332,11 +343,12 @@ PlayResY: {img_h}
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Oyun Qagan Tig,24,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,270,1,1.5,0,7,0,0,0,1
+Style: Default,Oyun Qagan Tig,{font_size},{primary_color},&H000000FF,{outline_color},&H80000000,0,0,0,0,100,100,0,270,1,1.5,0,7,0,0,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
+    # ... 下面剩余的解析 SRT 并触发翻译的代码保持原样不变 ...
     try:
         with open(srt_path, 'r', encoding='utf-8') as f:
             srt_content = f.read()
@@ -350,20 +362,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 text_lines = lines[2:]
                 original_text = " ".join(text_lines)
 
-                # ========================================
-                # 🚀 激活机器翻译
-                # ========================================
                 translated_text = translate_to_mongolian(original_text, pid, appkey)
                 text = translated_text.replace('\n', '\\N')
 
-                # 解析 SRT 时间格式：00:00:00,000 --> 00:00:05,000
                 time_match = re.match(r'(\d{2}):(\d{2}):(\d{2}),(\d{3}) --> (\d{2}):(\d{2}):(\d{2}),(\d{3})', time_line)
                 if time_match:
                     h1, m1, s1, ms1, h2, m2, s2, ms2 = time_match.groups()
                     start = f"{int(h1)}:{m1}:{s1}.{ms1[:2]}"
                     end = f"{int(h2)}:{m2}:{s2}.{ms2[:2]}"
 
-                    # 植入绝对定位标签 \pos(x,y)
                     ass_text = f"{{\\pos({pos_x},{pos_y})}}{text}"
                     ass_events.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{ass_text}")
 
