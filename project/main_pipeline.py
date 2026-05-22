@@ -324,125 +324,68 @@ def translate_to_mongolian(text, pid="YOUR_PID", appKey="YOUR_APPKEY"):
     return text
 
 
-def convert_srt_to_ass_vertical(srt_path, ass_path, subtitle_pos, img_w, img_h, pid, appkey):
-    x1, y1, x2, y2 = subtitle_pos
-    box_h = y2 - y1  # 计算框的高度
+def translate_to_mongolian(text, pid="YOUR_PID", appKey="YOUR_APPKEY"):
+    # 【修复 3：防御性编程】内容、pid 或 appkey 为空时直接跳过，绝不浪费网络请求
+    if not text.strip() or not pid or not appKey:
+        return text
 
-    # 1. 设置默认样式
-    font_size = 24
-    primary_color = "&H00FFFFFF"
-    outline_color = "&H00000000"
+    url = "http://oy.nmgoyun.com/api/fy/v1"
+    timestamp = str(int(time.time() * 1000))
+    nonce = uuid.uuid4().hex
 
-    # 读取配置文件获取字体大小
-    config_path = os.path.join(root_dir, "project", "fronts", "font-configuration.json")
-    if os.path.exists(config_path):
+    # 【修复 2：类型一致性】明确 type 为整数 5
+    sign_params = {
+        "appKey": appKey,
+        "inputStr": text,
+        "nonce": nonce,
+        "pid": pid,
+        "timestamp": timestamp,
+        "type": 5
+    }
+
+    # 【修复 1：严格签名机制】按字典序排序，直接拼接原始字符串，绝对不要 url_encode
+    sorted_keys = sorted(sign_params.keys())
+    sign_str = "&".join([f"{k}={sign_params[k]}" for k in sorted_keys])
+    sign = hashlib.md5(sign_str.encode('utf-8')).hexdigest().upper()
+
+    # 实际发送的 payload 不包含 appKey
+    payload = {
+        "inputStr": text,
+        "nonce": nonce,
+        "pid": pid,
+        "sign": sign,
+        "timestamp": timestamp,
+        "type": 5
+    }
+
+    # 【修复 4：网络代理穿透】主动抓取系统的 http/https 代理环境变量
+    proxies = {
+        "http": os.environ.get("http_proxy") or os.environ.get("HTTP_PROXY"),
+        "https": os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY")
+    }
+
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                cfg = json.load(f)
-                fs_raw = cfg.get("FontSize", font_size)
-                # 安全提取数字
-                font_size = int(str(fs_raw).replace('px', '').strip())
-                primary_color = cfg.get("PrimaryColour", primary_color)
-                outline_color = cfg.get("OutlineColour", outline_color)
+            # 引入 proxies 参数，采用 (3秒连接, 5秒读取) 的快连快断策略
+            resp = requests.post(url, json=payload, timeout=(3, 5), proxies=proxies)
+            res_json = resp.json()
+
+            if res_json.get("code") == "0000":
+                return res_json.get("data", text)
+            else:
+                print(f"    ⚠ [翻译接口报错] 代码: {res_json.get('code')}, 信息: {res_json.get('message')}")
+                return text
+
+        except requests.exceptions.Timeout:
+            print(f"    ⚠ [翻译超时] 第 {attempt + 1} 次请求超时，正在重试...")
         except Exception as e:
-            pass
+            print(f"    ⚠ [翻译异常] 第 {attempt + 1} 次请求失败: {e}，正在重试...")
 
-    # 核心算法 1：计算单列最大容纳字符数
-    # 蒙文连写时，纵向平均单字符占用高度约为字体大小的 60%
-    # 上下各留出 10px 的安全边距 (总计 20px)
-    max_chars = max(5, int((box_h - 20) / (font_size * 0.6)))
+        time.sleep(1)  # 失败缓冲 1 秒
 
-    ass_header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {img_w}
-PlayResY: {img_h}
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Oyun Qagan Tig,{font_size},{primary_color},&H000000FF,{outline_color},&H80000000,0,0,0,0,100,100,0,270,1,1.5,0,7,0,0,0,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-    try:
-        with open(srt_path, 'r', encoding='utf-8') as f:
-            srt_content = f.read()
-
-        blocks = srt_content.strip().split('\n\n')
-        ass_events = []
-        for block in blocks:
-            lines = block.split('\n')
-            if len(lines) >= 3:
-                time_line = lines[1]
-                text_lines = lines[2:]
-                original_text = " ".join(text_lines)
-
-                # 调用 API 翻译
-                translated_text = translate_to_mongolian(original_text, pid, appkey)
-
-                # 核心算法 2：智能换列截断逻辑 (防超长单词 + 按空格折行)
-                words = translated_text.split()
-                cols = []
-                curr_col = ""
-                for w in words:
-                    # 如果单个单词长度直接爆表（罕见情况兜底强制切断）
-                    if len(w) > max_chars:
-                        if curr_col:
-                            cols.append(curr_col)
-                            curr_col = ""
-                        for chunk_idx in range(0, len(w), max_chars):
-                            chunk = w[chunk_idx:chunk_idx+max_chars]
-                            if len(chunk) == max_chars:
-                                cols.append(chunk)
-                            else:
-                                curr_col = chunk
-                    else:
-                        # 正常按空格拼接，超长即换入下一列
-                        if not curr_col:
-                            curr_col = w
-                        elif len(curr_col) + 1 + len(w) <= max_chars:
-                            curr_col += " " + w
-                        else:
-                            cols.append(curr_col)
-                            curr_col = w
-                if curr_col:
-                    cols.append(curr_col)
-
-                if not cols:
-                    cols = [translated_text]
-
-                # 解析时间轴
-                time_match = re.match(r'(\d{2}):(\d{2}):(\d{2}),(\d{3}) --> (\d{2}):(\d{2}):(\d{2}),(\d{3})', time_line)
-                if time_match:
-                    h1, m1, s1, ms1, h2, m2, s2, ms2 = time_match.groups()
-                    start = f"{int(h1)}:{m1}:{s1}.{ms1[:2]}"
-                    end = f"{int(h2)}:{m2}:{s2}.{ms2[:2]}"
-
-                    # 核心算法 3：动态坐标排版
-                    col_spacing = font_size + 15  # 列与列之间的间距 (字体大小 + 15px呼吸感)
-                    num_cols = len(cols)
-
-                    # 整体紧贴框的右边缘 (往左缩 10px 防压边)
-                    rightmost_x = x2 - 10
-                    # 第一列的 X 坐标计算：从最右侧反推第一列的位置
-                    start_x = rightmost_x - (num_cols - 1) * col_spacing
-                    base_y = y1 + 10
-
-                    for i, col_text in enumerate(cols):
-                        # 逐列向右递增排列 (第一列在左，最后一列贴紧最右)
-                        pos_x = start_x + i * col_spacing
-                        pos_y = base_y
-                        clean_text = col_text.replace('\n', ' ')
-                        ass_text = f"{{\\pos({pos_x},{pos_y})}}{clean_text}"
-                        # 将每一列作为一个独立字幕层同时渲染
-                        ass_events.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{ass_text}")
-
-        with open(ass_path, 'w', encoding='utf-8') as f:
-            f.write(ass_header + "\n".join(ass_events) + "\n")
-        return True
-    except Exception as e:
-        print(f"    ✗ [字幕系统] ASS 转换严重异常: {e}")
-        return False
+    print(f"    ❌ [翻译彻底失败] 超过 {max_retries} 次仍无法连接奥云服务器，保留原中文字幕。")
+    return text
 
 
 def process_audio_and_subtitles(original_video, video_source, is_image_sequence, final_output_video, workspace,
