@@ -326,25 +326,31 @@ def translate_to_mongolian(text, pid="YOUR_PID", appKey="YOUR_APPKEY"):
 
 def convert_srt_to_ass_vertical(srt_path, ass_path, subtitle_pos, img_w, img_h, pid, appkey):
     x1, y1, x2, y2 = subtitle_pos
-    pos_x = x1 + 10
-    pos_y = y1 + 10
+    box_h = y2 - y1  # 计算框的高度
 
     # 1. 设置默认样式
-    font_size = "24"
+    font_size = 24
     primary_color = "&H00FFFFFF"
     outline_color = "&H00000000"
 
-    # 2. 尝试读取配置文件
+    # 读取配置文件获取字体大小
     config_path = os.path.join(root_dir, "project", "fronts", "font-configuration.json")
     if os.path.exists(config_path):
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 cfg = json.load(f)
-                font_size = str(cfg.get("FontSize", font_size))
+                fs_raw = cfg.get("FontSize", font_size)
+                # 安全提取数字
+                font_size = int(str(fs_raw).replace('px', '').strip())
                 primary_color = cfg.get("PrimaryColour", primary_color)
                 outline_color = cfg.get("OutlineColour", outline_color)
         except Exception as e:
-            print(f"    ⚠ 读取字体配置失败, 使用默认样式: {e}")
+            pass
+
+    # 核心算法 1：计算单列最大容纳字符数
+    # 蒙文连写时，纵向平均单字符占用高度约为字体大小的 60%
+    # 上下各留出 10px 的安全边距 (总计 20px)
+    max_chars = max(5, int((box_h - 20) / (font_size * 0.6)))
 
     ass_header = f"""[Script Info]
 ScriptType: v4.00+
@@ -358,7 +364,6 @@ Style: Default,Oyun Qagan Tig,{font_size},{primary_color},&H000000FF,{outline_co
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    # ... 下面剩余的解析 SRT 并触发翻译的代码保持原样不变 ...
     try:
         with open(srt_path, 'r', encoding='utf-8') as f:
             srt_content = f.read()
@@ -372,17 +377,65 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 text_lines = lines[2:]
                 original_text = " ".join(text_lines)
 
+                # 调用 API 翻译
                 translated_text = translate_to_mongolian(original_text, pid, appkey)
-                text = translated_text.replace('\n', '\\N')
 
+                # 核心算法 2：智能换列截断逻辑 (防超长单词 + 按空格折行)
+                words = translated_text.split()
+                cols = []
+                curr_col = ""
+                for w in words:
+                    # 如果单个单词长度直接爆表（罕见情况兜底强制切断）
+                    if len(w) > max_chars:
+                        if curr_col:
+                            cols.append(curr_col)
+                            curr_col = ""
+                        for chunk_idx in range(0, len(w), max_chars):
+                            chunk = w[chunk_idx:chunk_idx+max_chars]
+                            if len(chunk) == max_chars:
+                                cols.append(chunk)
+                            else:
+                                curr_col = chunk
+                    else:
+                        # 正常按空格拼接，超长即换入下一列
+                        if not curr_col:
+                            curr_col = w
+                        elif len(curr_col) + 1 + len(w) <= max_chars:
+                            curr_col += " " + w
+                        else:
+                            cols.append(curr_col)
+                            curr_col = w
+                if curr_col:
+                    cols.append(curr_col)
+
+                if not cols:
+                    cols = [translated_text]
+
+                # 解析时间轴
                 time_match = re.match(r'(\d{2}):(\d{2}):(\d{2}),(\d{3}) --> (\d{2}):(\d{2}):(\d{2}),(\d{3})', time_line)
                 if time_match:
                     h1, m1, s1, ms1, h2, m2, s2, ms2 = time_match.groups()
                     start = f"{int(h1)}:{m1}:{s1}.{ms1[:2]}"
                     end = f"{int(h2)}:{m2}:{s2}.{ms2[:2]}"
 
-                    ass_text = f"{{\\pos({pos_x},{pos_y})}}{text}"
-                    ass_events.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{ass_text}")
+                    # 核心算法 3：动态坐标排版
+                    col_spacing = font_size + 15  # 列与列之间的间距 (字体大小 + 15px呼吸感)
+                    num_cols = len(cols)
+
+                    # 整体紧贴框的右边缘 (往左缩 10px 防压边)
+                    rightmost_x = x2 - 10
+                    # 第一列的 X 坐标计算：从最右侧反推第一列的位置
+                    start_x = rightmost_x - (num_cols - 1) * col_spacing
+                    base_y = y1 + 10
+
+                    for i, col_text in enumerate(cols):
+                        # 逐列向右递增排列 (第一列在左，最后一列贴紧最右)
+                        pos_x = start_x + i * col_spacing
+                        pos_y = base_y
+                        clean_text = col_text.replace('\n', ' ')
+                        ass_text = f"{{\\pos({pos_x},{pos_y})}}{clean_text}"
+                        # 将每一列作为一个独立字幕层同时渲染
+                        ass_events.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{ass_text}")
 
         with open(ass_path, 'w', encoding='utf-8') as f:
             f.write(ass_header + "\n".join(ass_events) + "\n")
