@@ -283,54 +283,45 @@ def get_md5(text):
 
 def translate_to_mongolian(text, pid="YOUR_PID", appKey="YOUR_APPKEY"):
     """
-    遵循奥云官方文档规范：字典序排序、URLEncode、最后 MD5 获取大写签名。
+    带超时重试机制的翻译接口调用
     """
     if not text.strip(): return text
-    url = "http://oy.nmgoyun.com/api/fy/v1"
+    url = "https://oy.nmgoyun.com/api/fy/v1"
     timestamp = str(int(time.time() * 1000))
-    import uuid  # 防止报错
+    import uuid
     nonce = uuid.uuid4().hex
 
     params = {
-        "inputStr": text,
-        "nonce": nonce,
-        "pid": pid,
-        "timestamp": timestamp,
-        "type": "5",  # 汉 -> 传统蒙文
-        "appKey": appKey
+        "inputStr": text, "nonce": nonce, "pid": pid,
+        "timestamp": timestamp, "type": "5", "appKey": appKey
     }
 
-    # 严格 MD5 签名生成
     sorted_keys = sorted(params.keys())
-    temp_list = []
-    for k in sorted_keys:
-        val = str(params[k])
-        encoded_val = urllib.parse.quote_plus(val)  # 等同于 Java的 URLEncoder.encode
-        temp_list.append(f"{k}={encoded_val}")
-
-    query_string = "&".join(temp_list)
-    sign = get_md5(query_string)
+    temp_list = [f"{k}={urllib.parse.quote_plus(str(params[k]))}" for k in sorted_keys]
+    sign = get_md5("&".join(temp_list))
 
     payload = {
-        "inputStr": text,
-        "nonce": nonce,
-        "pid": pid,
-        "sign": sign,
-        "timestamp": timestamp,
-        "type": 5
+        "inputStr": text, "nonce": nonce, "pid": pid,
+        "sign": sign, "timestamp": timestamp, "type": 5
     }
 
-    try:
-        resp = requests.post(url, json=payload, timeout=10)
-        res_json = resp.json()
-        if res_json.get("code") == "0000":
-            return res_json.get("data", text)
-        else:
-            print(f"    ⚠ [翻译拦截] API 返回失败: {res_json}")
-            return text
-    except Exception as e:
-        print(f"    ⚠ [翻译异常] {e}")
-        return text
+    # 【修复1：翻译防漏防超时】增加 3次重试，超时时长放宽至 30秒
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(url, json=payload, timeout=30)
+            res_json = resp.json()
+            if res_json.get("code") == "0000":
+                return res_json.get("data", text)
+            else:
+                print(f"    ⚠ [翻译拦截] 接口返回失败: {res_json}")
+                return text
+        except Exception as e:
+            print(f"    ⚠ [翻译异常/超时] 第 {attempt + 1} 次请求失败: {e}，正在重试...")
+            time.sleep(2)
+
+    print(f"    ❌ [翻译彻底失败] 超过 {max_retries} 次仍无法连接奥云服务器，使用原中文字幕。")
+    return text
 
 
 def convert_srt_to_ass_vertical(srt_path, ass_path, subtitle_pos, img_w, img_h, pid, appkey):
@@ -403,15 +394,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 def process_audio_and_subtitles(original_video, video_source, is_image_sequence, final_output_video, workspace,
                                 subtitle_pos, img_w, img_h, print_lock, fps):
-    # 失败回退函数：如果在提取语音/生成字幕时出错，至少保证把已经修好的画面输出成无字幕视频
     def fallback_encode():
         if is_image_sequence:
+            # 【修复2：视频打不开】在回退渲染中也加入 -pix_fmt yuv420p
             cmd = ['ffmpeg', '-y', '-f', 'image2', '-framerate', str(fps),
                    '-i', os.path.join(video_source, 'frame_%04d.png'),
                    '-i', original_video, '-vf', "pad=ceil(iw/2)*2:ceil(ih/2)*2",
                    '-map', '0:v:0', '-map', '1:a:0?',
-                   '-c:v', 'libx264', '-crf', '18', '-c:a', 'copy', '-shortest', final_output_video]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                   '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', '-c:a', 'copy', '-shortest',
+                   final_output_video]
+            subprocess.run(cmd)  # 【修复3：解锁日志】删掉 DEVNULL
         else:
             shutil.copy(original_video, final_output_video)
 
@@ -430,9 +422,11 @@ def process_audio_and_subtitles(original_video, video_source, is_image_sequence,
     audio_path = os.path.join(subtitle_dir, f"{video_basename}.wav")
     with print_lock:
         print("    >> 提取视频音轨...")
+
+    # 【修复3：解锁日志】让 FFmpeg 提取音频的日志可以直接打到控制台
     subprocess.run(
-        ['ffmpeg', '-y', '-i', original_video, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', audio_path],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ['ffmpeg', '-y', '-i', original_video, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', audio_path]
+    )
 
     if not os.path.exists(audio_path):
         with print_lock: print("    ⚠ 原视频无声轨，跳过字幕生成。")
@@ -441,8 +435,8 @@ def process_audio_and_subtitles(original_video, video_source, is_image_sequence,
 
     with print_lock:
         print("    >> 唤醒 Whisper 提取文字...")
-    subprocess.run(['whisper', audio_path, '--model', 'turbo', '--output_format', 'srt', '--output_dir', subtitle_dir],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # 【修复3：解锁日志】解锁 Whisper 提取日志
+    subprocess.run(['whisper', audio_path, '--model', 'turbo', '--output_format', 'srt', '--output_dir', subtitle_dir])
 
     final_srt = os.path.join(subtitle_dir, f"{video_basename}.srt")
     if not os.path.exists(final_srt):
@@ -469,7 +463,6 @@ def process_audio_and_subtitles(original_video, video_source, is_image_sequence,
     fonts_dir_relative = "fronts"
     ass_relative = os.path.relpath(mn_ass_path, current_dir).replace('\\', '/')
 
-    # 核心优化：彻底告别双重编码，直接把清洗完成的原始图片帧挂上字幕压制为 MP4！
     if is_image_sequence:
         cmd = [
             'ffmpeg', '-y', '-f', 'image2', '-framerate', str(fps),
@@ -477,25 +470,29 @@ def process_audio_and_subtitles(original_video, video_source, is_image_sequence,
             '-i', original_video,
             '-vf', f"pad=ceil(iw/2)*2:ceil(ih/2)*2,ass='{ass_relative}':fontsdir='{fonts_dir_relative}'",
             '-map', '0:v:0', '-map', '1:a:0?',
-            '-c:a', 'copy', '-c:v', 'libx264', '-crf', '18', '-shortest',
+            '-c:a', 'copy',
+            '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', '-shortest',  # 【修复2：视频打不开】加入 yuv420p
             final_output_video
         ]
     else:
         cmd = [
             'ffmpeg', '-y', '-i', video_source,
             '-vf', f"ass='{ass_relative}':fontsdir='{fonts_dir_relative}'",
-            '-c:a', 'copy', '-c:v', 'libx264', '-crf', '18',
+            '-c:a', 'copy',
+            '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',  # 【修复2：视频打不开】加入 yuv420p
             final_output_video
         ]
 
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    # 【修复3：解锁日志】用普通 run 运行，让 FFmpeg 的进度和报错完全暴露在你的 log 文件里
+    subprocess.run(cmd)
+
     if os.path.exists(final_output_video):
         with print_lock:
             print(f"    ✓ 定点旋转字幕烧录成功！成品路径: {final_output_video}")
         return True
     else:
         with print_lock:
-            print(f"    ✗ 字幕烧录失败，启用安全回退方案: {res.stderr}")
+            print(f"    ✗ 字幕烧录失败，启用安全回退方案...")
         fallback_encode()
         return False
 
@@ -732,7 +729,7 @@ def main():
         with ThreadPoolExecutor(max_workers=8) as ex:
             list(ex.map(merge_worker, m_tasks))
 
-        # 【核心优化】直接删除原有的 Step 7 (纯净视频压制)！直接无缝进入终极压制。
+        # 【核心优化】不生成 temp_clean_video.mp4，直接把图片文件夹交给下一步压制
         report_progress("subtitle_burning", 95)
         video_source = final_dir
         is_image_sequence = True
@@ -742,7 +739,7 @@ def main():
         video_source = args.video
         is_image_sequence = False
 
-        # 【终极工序】字幕与翻译系统 (直接接收图片流，单次压制，性能翻倍！)
+        # 【终极工序】字幕与翻译系统 (接收图片流，单次压制，性能翻倍！)
     final_output = os.path.join(args.workspace, args.output_video)
     process_audio_and_subtitles(args.video, video_source, is_image_sequence, final_output, args.workspace, subtitle_pos,
                                 img_w, img_h, threading.Lock(), fps)

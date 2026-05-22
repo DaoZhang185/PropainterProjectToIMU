@@ -304,6 +304,7 @@ document.getElementById('start-drawing-btn').insertAdjacentHTML('afterend', `
     <button class="btn btn-success mt-1" id="commit-sam-btn" style="display:none;"><i class="fas fa-check-double me-1"></i>确认抠图</button>
 `);
 
+// 在 app.js 中找到这段代码并替换：
 document.getElementById('commit-sam-btn').addEventListener('click', () => {
     if (samSession.polygons) {
         const type = document.getElementById('regionType').value;
@@ -311,7 +312,8 @@ document.getElementById('commit-sam-btn').addEventListener('click', () => {
         maskRects.push({
             id: ++boxIdCounter, type: type, mode: 'magic', extractMode: mode, polygons: samSession.polygons,
             visible: true, ref_time: currentExtractTimeStr,
-            otherId: type === 'other' ? ++otherRegionCounter : null
+            // 【死逻辑修复】：去掉 ++，强制 SAM 掩码与刚画的红框死死绑定在同一个 ID 下！
+            otherId: type === 'other' ? otherRegionCounter : null
         });
         updateLayerPanel();
     }
