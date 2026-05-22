@@ -312,9 +312,11 @@ document.getElementById('commit-sam-btn').addEventListener('click', () => {
         maskRects.push({
             id: ++boxIdCounter, type: type, mode: 'magic', extractMode: mode, polygons: samSession.polygons,
             visible: true, ref_time: currentExtractTimeStr,
-            // 【死逻辑修复】：去掉 ++，强制 SAM 掩码与刚画的红框死死绑定在同一个 ID 下！
-            otherId: type === 'other' ? otherRegionCounter : null
+            // 【死逻辑修复】：去掉 ++，强制让 SAM 掩码与你最后画的那个红框绑定在同一个 ID 下！绝不分家！
+            otherId: type === 'other' ? (otherRegionCounter === 0 ? 1 : otherRegionCounter) : null
         });
+        // 兜底安全：如果上来就直接用了SAM没画框，计数器也安全置为1
+        if (type === 'other' && otherRegionCounter === 0) otherRegionCounter = 1;
         updateLayerPanel();
     }
     samSession = { active: false, pos: [], neg: [], polygons: null, history: [] };
@@ -451,22 +453,38 @@ async function generateJSON() {
         regions: {}
     };
 
+    // 【核心修复】：先按区域把所有的框和 SAM 归拢分组
+    const regionsMap = {};
     activeMasks.forEach(box => {
         let regionKey = box.type === 'other' ? `other_${box.otherId}` : box.type;
-
-        if (!jsonData.regions[regionKey]) {
-            jsonData.regions[regionKey] = { typeName: getRegionTypeName(box.type), reference_time: box.ref_time, largeBoxes: [], smallBoxes: [] };
-        }
-
-        if (box.mode === 'magic') {
-            box.polygons.forEach((poly, idx) => { jsonData.regions[regionKey].smallBoxes.push({ id: `${box.id}_${idx}`, polygon: poly }); });
-        } else {
-            const realCoords = displayToImageCoordinates(box.x, box.y);
-            const boxData = { id: box.id, x: realCoords.x, y: realCoords.y, width: Math.round(box.width / imageScale), height: Math.round(box.height / imageScale) };
-            if (box.mode === 'large') jsonData.regions[regionKey].largeBoxes.push(boxData);
-            else jsonData.regions[regionKey].smallBoxes.push(boxData);
-        }
+        if (!regionsMap[regionKey]) regionsMap[regionKey] = [];
+        regionsMap[regionKey].push(box);
     });
+
+    // 遍历每一个区域，执行“如果有 SAM，就不发实心红框”的铁律！
+    for (let regionKey in regionsMap) {
+        const boxes = regionsMap[regionKey];
+        jsonData.regions[regionKey] = { typeName: getRegionTypeName(boxes[0].type), reference_time: boxes[0].ref_time, largeBoxes: [], smallBoxes: [] };
+
+        // 侦测：这个区域（这个红框里）是不是被你用 SAM 画过？
+        const hasMagic = boxes.some(b => b.mode === 'magic');
+
+        boxes.forEach(box => {
+            if (box.mode === 'magic') {
+                box.polygons.forEach((poly, idx) => { jsonData.regions[regionKey].smallBoxes.push({ id: `${box.id}_${idx}`, polygon: poly }); });
+            } else {
+                // 【终极拦截】：如果你在这个红框里用了 SAM，那就【绝对不把红框传给后台画成死黑块】！
+                if (hasMagic && box.type !== 'sub_pos') {
+                    return; // 这一行直接拦截，让红框只在前端作为你的视觉参考，不去后台捣乱
+                }
+
+                const realCoords = displayToImageCoordinates(box.x, box.y);
+                const boxData = { id: box.id, x: realCoords.x, y: realCoords.y, width: Math.round(box.width / imageScale), height: Math.round(box.height / imageScale) };
+                if (box.mode === 'large') jsonData.regions[regionKey].largeBoxes.push(boxData);
+                else jsonData.regions[regionKey].smallBoxes.push(boxData);
+            }
+        });
+    }
 
     const btn = document.getElementById('generate-json-btn');
     const originalBtnText = btn.innerHTML;
