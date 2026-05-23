@@ -84,6 +84,8 @@ def get_recursive_segments(start_idx, end_idx, max_frames=300):
 def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080, time_ranges=None):
     if time_ranges is None: time_ranges = {}
     boxes = []
+
+    # 1. 基础信息装载 (保持你原有的逻辑完全不变)
     for key, coords_list in all_poses.items():
         if not coords_list: continue
         all_x, all_y = [], []
@@ -97,13 +99,14 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080, time_ranges
                 all_y.extend(pts[:, 1])
         if not all_x or not all_y: continue
 
-        # 确立不可侵犯的基础原框
         bx1, by1 = max(0, min(all_x)), max(0, min(all_y))
         bx2, by2 = min(img_w, max(all_x)), min(img_h, max(all_y))
 
-        # 初始的外扩框（如果没有任何碰撞的情况）
-        cx1, cy1 = max(0, bx1 - padding), max(0, by1 - padding)
-        cx2, cy2 = min(img_w, bx2 + padding), min(img_h, by2 + padding)
+        # 初始的全尺寸外扩框
+        cx1 = max(0, bx1 - padding)
+        cy1 = max(0, by1 - padding)
+        cx2 = min(img_w, bx2 + padding)
+        cy2 = min(img_h, by2 + padding)
 
         plan_tr = {key: time_ranges[key]} if key in time_ranges else {}
         boxes.append({
@@ -115,50 +118,60 @@ def resolve_overlaps(all_poses, padding=150, img_w=1920, img_h=1080, time_ranges
         })
 
     # =================================================================
-    # 【核心逻辑】：不合并区域！仅在外扩空间发生重叠时，从间隙的绝对中点砌墙截断
+    # 【全新核心】：全空间自适应防入侵算法 (360度无死角，无关画框顺序)
     # =================================================================
     for i in range(len(boxes)):
-        for j in range(i + 1, len(boxes)):
-            b1 = boxes[i]["base_coords"]
-            b2 = boxes[j]["base_coords"]
+        bx1, by1, bx2, by2 = boxes[i]["base_coords"]
 
-            # 判断两个原始基准框在坐标轴上是否有物理交集
-            x_overlap = not (b1[2] <= b2[0] or b1[0] >= b2[2])
-            y_overlap = not (b1[3] <= b2[1] or b1[1] >= b2[3])
+        # 让当前框和画布上的【每一个其他框】进行比对，寻找安全边界
+        for j in range(len(boxes)):
+            if i == j: continue
+            obx1, oby1, obx2, oby2 = boxes[j]["base_coords"]
 
-            # 1. 仅在 X 轴上分开（左右排列）
-            if not x_overlap:
-                if b1[2] <= b2[0]:  # box_i 在左，box_j 在右
-                    mid_x = (b1[2] + b2[0]) / 2.0
-                    boxes[i]["crop_coords"][2] = min(boxes[i]["crop_coords"][2], mid_x)
-                    boxes[j]["crop_coords"][0] = max(boxes[j]["crop_coords"][0], mid_x)
-                elif b2[2] <= b1[0]:  # box_j 在左，box_i 在右
-                    mid_x = (b2[2] + b1[0]) / 2.0
-                    boxes[j]["crop_coords"][2] = min(boxes[j]["crop_coords"][2], mid_x)
-                    boxes[i]["crop_coords"][0] = max(boxes[i]["crop_coords"][0], mid_x)
+            # 侦测两者在 X 轴上的绝对物理距离
+            dist_x = 0
+            if bx2 <= obx1:
+                dist_x = obx1 - bx2  # 当前框在左，目标在右
+            elif bx1 >= obx2:
+                dist_x = bx1 - obx2  # 当前框在右，目标在左
 
-            # 2. 仅在 Y 轴上分开（上下排列）
-            if not y_overlap:
-                if b1[3] <= b2[1]:  # box_i 在上，box_j 在下
-                    mid_y = (b1[3] + b2[1]) / 2.0
-                    boxes[i]["crop_coords"][3] = min(boxes[i]["crop_coords"][3], mid_y)
-                    boxes[j]["crop_coords"][1] = max(boxes[j]["crop_coords"][1], mid_y)
-                elif b2[3] <= b1[1]:  # box_j 在上，box_i 在下
-                    mid_y = (b2[3] + b1[1]) / 2.0
-                    boxes[j]["crop_coords"][3] = min(boxes[j]["crop_coords"][3], mid_y)
-                    boxes[i]["crop_coords"][1] = max(boxes[i]["crop_coords"][1], mid_y)
+            # 侦测两者在 Y 轴上的绝对物理距离
+            dist_y = 0
+            if by2 <= oby1:
+                dist_y = oby1 - by2  # 当前框在上，目标在下
+            elif by1 >= oby2:
+                dist_y = by1 - oby2  # 当前框在下，目标在上
 
-            # 3. 如果 x_overlap 和 y_overlap 同时为真，说明用户画的红框本身就已经重合了。
-            # 此时绝不干涉裁剪，任由它们自然外扩并生成两个交叠的任务图层，确保原区域不缺失。
+            # 如果两个红框本身就是重叠的（用户故意画叠在一起），则无法分割
+            if dist_x == 0 and dist_y == 0:
+                continue
 
-    # 收尾工序：保证截断后的坐标依然有效，并满足 ProPainter 16像素边界要求
+            # 核心策略：选取距离更远的那条轴作为“主切割轴”，确保最优隔离
+            if dist_x >= dist_y:
+                # 沿 X 轴竖起隔离墙
+                if bx2 <= obx1:  # 当前框在左，限制其外扩的右边界
+                    limit = bx2 + dist_x / 2.0
+                    boxes[i]["crop_coords"][2] = min(boxes[i]["crop_coords"][2], limit)
+                else:  # 当前框在右，限制其外扩的左边界
+                    limit = obx2 + dist_x / 2.0
+                    boxes[i]["crop_coords"][0] = max(boxes[i]["crop_coords"][0], limit)
+            else:
+                # 沿 Y 轴竖起隔离墙
+                if by2 <= oby1:  # 当前框在上，限制其外扩的下边界
+                    limit = by2 + dist_y / 2.0
+                    boxes[i]["crop_coords"][3] = min(boxes[i]["crop_coords"][3], limit)
+                else:  # 当前框在下，限制其外扩的上边界
+                    limit = oby2 + dist_y / 2.0
+                    boxes[i]["crop_coords"][1] = max(boxes[i]["crop_coords"][1], limit)
+
+    # 3. 收尾工序 (保持16像素对齐的底层逻辑，但加入了防越界锁)
     for i in range(len(boxes)):
         cx1, cy1, cx2, cy2 = boxes[i]["crop_coords"]
         bx1, by1, bx2, by2 = boxes[i]["base_coords"]
 
         cx1, cy1, cx2, cy2 = int(cx1), int(cy1), int(cx2), int(cy2)
 
-        # 安全断言：无论如何截断，外扩区域都绝对不能切到最初画好的红框内部！
+        # 绝对防线：外扩区域无论怎么被挤压，绝不允许切破自己原始的红框 (BaseBox)
         cx1 = max(0, min(cx1, int(bx1)))
         cy1 = max(0, min(cy1, int(by1)))
         cx2 = min(img_w, max(cx2, int(bx2)))
