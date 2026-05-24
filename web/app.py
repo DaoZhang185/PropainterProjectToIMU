@@ -9,7 +9,7 @@ import glob
 import cv2
 import base64
 import subprocess
-
+import tempfile
 from fastapi import FastAPI, UploadFile, File, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -189,22 +189,39 @@ async def save_mask_api(request_data: SaveMaskRequest):
 async def extract_frame_api(request_data: ExtractFrameRequest):
     vid_path = os.path.join(VIDEO_FOLDER, os.path.basename(request_data.video_filename))
     if not os.path.exists(vid_path): raise HTTPException(status_code=404, detail="Video not found")
+
+    # =================================================================
+    # 【核心修复】：废弃缓慢的 OpenCV 逐帧解码，改用 FFmpeg 关键帧极速闪现
+    # =================================================================
+    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+        temp_out = tmp.name
+
     try:
-        h, m, s = map(int, request_data.timestamp.split(':'))
-        seconds = h * 3600 + m * 60 + s
-    except: raise HTTPException(status_code=400, detail="Invalid format")
+        # 注意：-ss 参数必须放在 -i 的前面，这代表开启 O(1) 级别的急速跳转 (Fast Seek)
+        cmd = [
+            'ffmpeg', '-y',
+            '-ss', request_data.timestamp,  # 直接使用前端传来的 HH:MM:SS 字符串
+            '-i', vid_path,
+            '-vframes', '1',
+            '-q:v', '2',
+            temp_out
+        ]
 
-    cap = cv2.VideoCapture(vid_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, int(seconds * fps))
-    ret, frame = cap.read()
-    cap.release()
+        # 执行命令，屏蔽底层日志输出
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    if ret:
-        _, buf = cv2.imencode('.jpg', frame)
-        b64 = base64.b64encode(buf).decode('utf-8')
-        return {"success": True, "image_data": f"data:image/jpeg;base64,{b64}"}
-    raise HTTPException(status_code=500, detail="Extract failed")
+        if os.path.exists(temp_out) and os.path.getsize(temp_out) > 0:
+            with open(temp_out, 'rb') as f:
+                buf = f.read()
+            b64 = base64.b64encode(buf).decode('utf-8')
+            return {"success": True, "image_data": f"data:image/jpeg;base64,{b64}"}
+        else:
+            raise HTTPException(status_code=500, detail="Extract failed (FFmpeg returned empty)")
+
+    finally:
+        # 兜底清理：截帧完成后自动删除临时图片文件
+        if os.path.exists(temp_out):
+            os.remove(temp_out)
 
 @app.post("/api/auto-segment", tags=["AI 抠图"])
 async def auto_segment_api(request_data: AutoSegmentRequest):
