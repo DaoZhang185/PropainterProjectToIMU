@@ -121,6 +121,7 @@ def test_srt_translation():
 
             # 重新组装 SRT 块
             translated_blocks.append(f"{idx}\n{timestamp}\n{mn_text}")
+            time.sleep(0.01)
         else:
             translated_blocks.append(block)
 
