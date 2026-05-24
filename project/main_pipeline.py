@@ -667,7 +667,7 @@ def main():
         def inference_worker(task, gpu_manager, result_dict):
             cmd = [sys.executable, args.model_path, "--video", task['in_dir'], "--mask", task['mk_dir'], "--output",
                    task['out_dir'], "--fp16", "--mask_dilation", "4", "--flow_mask_dilation", "20", "--raft_iter", "20",
-                   "--ref_stride", "10", "--subvideo_length", "40"]
+                   "--ref_stride", "10", "--subvideo_length", "60"]
             env = os.environ.copy();
             env['CUDA_VISIBLE_DEVICES'] = gpu_manager.gpu_id
             tag = f"[GPU {gpu_manager.gpu_id} | {task['region']} | {task['seg_name']}]"
