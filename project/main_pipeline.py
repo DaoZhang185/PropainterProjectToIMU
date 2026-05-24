@@ -3,6 +3,8 @@ import os
 import argparse
 import json
 import shutil
+import uuid
+
 import cv2
 import numpy as np
 import subprocess
@@ -290,51 +292,8 @@ def render_video(frames_dir, source_video, output_path, fps=25.0):
 # 【核心新增】音频提取、机器翻译与蒙文字幕渲染挂载链路
 # =================================================================
 def get_md5(text):
-    import uuid  # 防止报错
+
     return hashlib.md5(text.encode('utf-8')).hexdigest().upper()
-
-
-def translate_to_mongolian(text, pid="YOUR_PID", appKey="YOUR_APPKEY"):
-    """
-    带超时重试机制的翻译接口调用
-    """
-    if not text.strip(): return text
-    url = "https://oy.nmgoyun.com/api/fy/v1"
-    timestamp = str(int(time.time() * 1000))
-    import uuid
-    nonce = uuid.uuid4().hex
-
-    params = {
-        "inputStr": text, "nonce": nonce, "pid": pid,
-        "timestamp": timestamp, "type": "5", "appKey": appKey
-    }
-
-    sorted_keys = sorted(params.keys())
-    temp_list = [f"{k}={urllib.parse.quote_plus(str(params[k]))}" for k in sorted_keys]
-    sign = get_md5("&".join(temp_list))
-
-    payload = {
-        "inputStr": text, "nonce": nonce, "pid": pid,
-        "sign": sign, "timestamp": timestamp, "type": 5
-    }
-
-    # 【修复1：翻译防漏防超时】增加 3次重试，超时时长放宽至 30秒
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            resp = requests.post(url, json=payload, timeout=30)
-            res_json = resp.json()
-            if res_json.get("code") == "0000":
-                return res_json.get("data", text)
-            else:
-                print(f"    ⚠ [翻译拦截] 接口返回失败: {res_json}")
-                return text
-        except Exception as e:
-            print(f"    ⚠ [翻译异常/超时] 第 {attempt + 1} 次请求失败: {e}，正在重试...")
-            time.sleep(2)
-
-    print(f"    ❌ [翻译彻底失败] 超过 {max_retries} 次仍无法连接奥云服务器，使用原中文字幕。")
-    return text
 
 
 def translate_to_mongolian(text, pid="YOUR_PID", appKey="YOUR_APPKEY"):
@@ -400,7 +359,109 @@ def translate_to_mongolian(text, pid="YOUR_PID", appKey="YOUR_APPKEY"):
     print(f"    ❌ [翻译彻底失败] 超过 {max_retries} 次仍无法连接奥云服务器，保留原中文字幕。")
     return text
 
+def convert_srt_to_ass_vertical(srt_path, ass_path, subtitle_pos, img_w, img_h, pid, appkey):
+    x1, y1, x2, y2 = subtitle_pos
+    box_h = y2 - y1
 
+    font_size = 24
+    primary_color = "&H00FFFFFF"
+    outline_color = "&H00000000"
+
+    config_path = os.path.join(root_dir, "project", "fronts", "font-configuration.json")
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+                fs_raw = cfg.get("FontSize", font_size)
+                font_size = int(str(fs_raw).replace('px', '').strip())
+                primary_color = cfg.get("PrimaryColour", primary_color)
+                outline_color = cfg.get("OutlineColour", outline_color)
+        except Exception as e:
+            pass
+
+    max_chars = max(5, int((box_h - 20) / (font_size * 0.6)))
+
+    ass_header = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {img_w}
+PlayResY: {img_h}
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Oyun Qagan Tig,{font_size},{primary_color},&H000000FF,{outline_color},&H80000000,0,0,0,0,100,100,0,270,1,1.5,0,7,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    try:
+        with open(srt_path, 'r', encoding='utf-8') as f:
+            srt_content = f.read()
+
+        blocks = srt_content.strip().split('\n\n')
+        ass_events = []
+        for block in blocks:
+            lines = block.split('\n')
+            if len(lines) >= 3:
+                time_line = lines[1]
+                text_lines = lines[2:]
+                original_text = " ".join(text_lines)
+
+                translated_text = translate_to_mongolian(original_text, pid, appkey)
+
+                words = translated_text.split()
+                cols = []
+                curr_col = ""
+                for w in words:
+                    if len(w) > max_chars:
+                        if curr_col:
+                            cols.append(curr_col)
+                            curr_col = ""
+                        for chunk_idx in range(0, len(w), max_chars):
+                            chunk = w[chunk_idx:chunk_idx+max_chars]
+                            if len(chunk) == max_chars:
+                                cols.append(chunk)
+                            else:
+                                curr_col = chunk
+                    else:
+                        if not curr_col:
+                            curr_col = w
+                        elif len(curr_col) + 1 + len(w) <= max_chars:
+                            curr_col += " " + w
+                        else:
+                            cols.append(curr_col)
+                            curr_col = w
+                if curr_col:
+                    cols.append(curr_col)
+
+                if not cols:
+                    cols = [translated_text]
+
+                import re
+                time_match = re.match(r'(\d{2}):(\d{2}):(\d{2}),(\d{3}) --> (\d{2}):(\d{2}):(\d{2}),(\d{3})', time_line)
+                if time_match:
+                    h1, m1, s1, ms1, h2, m2, s2, ms2 = time_match.groups()
+                    start = f"{int(h1)}:{m1}:{s1}.{ms1[:2]}"
+                    end = f"{int(h2)}:{m2}:{s2}.{ms2[:2]}"
+
+                    col_spacing = font_size + 15
+                    num_cols = len(cols)
+                    rightmost_x = x2 - 10
+                    start_x = rightmost_x - (num_cols - 1) * col_spacing
+                    base_y = y1 + 10
+
+                    for i, col_text in enumerate(cols):
+                        pos_x = start_x + i * col_spacing
+                        pos_y = base_y
+                        clean_text = col_text.replace('\n', ' ')
+                        ass_text = f"{{\\pos({pos_x},{pos_y})}}{clean_text}"
+                        ass_events.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{ass_text}")
+
+        with open(ass_path, 'w', encoding='utf-8') as f:
+            f.write(ass_header + "\n".join(ass_events) + "\n")
+        return True
+    except Exception as e:
+        print(f"    ✗ [字幕系统] ASS 转换严重异常: {e}")
+        return False
 def process_audio_and_subtitles(original_video, video_source, is_image_sequence, final_output_video, workspace,
                                 subtitle_pos, img_w, img_h, print_lock, fps):
     def fallback_encode():

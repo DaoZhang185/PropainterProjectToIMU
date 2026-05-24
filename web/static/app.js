@@ -473,10 +473,6 @@ async function generateJSON() {
             if (box.mode === 'magic') {
                 box.polygons.forEach((poly, idx) => { jsonData.regions[regionKey].smallBoxes.push({ id: `${box.id}_${idx}`, polygon: poly }); });
             } else {
-                // 【终极拦截】：如果你在这个红框里用了 SAM，那就【绝对不把红框传给后台画成死黑块】！
-                if (hasMagic && box.type !== 'sub_pos') {
-                    return; // 这一行直接拦截，让红框只在前端作为你的视觉参考，不去后台捣乱
-                }
 
                 const realCoords = displayToImageCoordinates(box.x, box.y);
                 const boxData = { id: box.id, x: realCoords.x, y: realCoords.y, width: Math.round(box.width / imageScale), height: Math.round(box.height / imageScale) };
