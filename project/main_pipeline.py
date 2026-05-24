@@ -664,7 +664,7 @@ def main():
             with ThreadPoolExecutor(max_workers=8) as ex:
                 list(ex.map(crop_worker, tasks))
 
-            scene_indices = detect_scenes_from_folder(crop_frames_dir, threshold=20.0)
+            scene_indices = detect_scenes_from_folder(crop_frames_dir, threshold=10.0)
             if 0 not in scene_indices: scene_indices.insert(0, 0)
             if len(frame_files) not in scene_indices: scene_indices.append(len(frame_files))
             scene_indices = sorted(list(set(scene_indices)))
