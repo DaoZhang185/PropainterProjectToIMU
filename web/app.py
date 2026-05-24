@@ -116,7 +116,8 @@ class ProcessingTask:
                 '--padding', '150',
                 '--gpus', '0,1,2,3',
                 '--scale_delay', '3',
-                '--cooldown', '10'
+                '--cooldown', '5'
+
             ]
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, cwd=PROJECT_DIR)
             while True:
