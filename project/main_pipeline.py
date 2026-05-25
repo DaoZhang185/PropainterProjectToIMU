@@ -19,6 +19,12 @@ import urllib.parse
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
+import hashlib
+import urllib.parse
+import requests
+from concurrent.futures import ThreadPoolExecutor
+from PIL import ImageFont  # 新增这行，引入 Pillow 的字体测量引擎
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 if root_dir not in sys.path: sys.path.insert(0, root_dir)
@@ -359,6 +365,7 @@ def translate_to_mongolian(text, pid="YOUR_PID", appKey="YOUR_APPKEY"):
     print(f"    ❌ [翻译彻底失败] 超过 {max_retries} 次仍无法连接奥云服务器，保留原中文字幕。")
     return text
 
+
 def convert_srt_to_ass_vertical(srt_path, ass_path, subtitle_pos, img_w, img_h, pid, appkey):
     x1, y1, x2, y2 = subtitle_pos
     box_h = y2 - y1
@@ -367,6 +374,7 @@ def convert_srt_to_ass_vertical(srt_path, ass_path, subtitle_pos, img_w, img_h, 
     primary_color = "&H00FFFFFF"
     outline_color = "&H00000000"
 
+    # 读取配置文件
     config_path = os.path.join(root_dir, "project", "fronts", "font-configuration.json")
     if os.path.exists(config_path):
         try:
@@ -379,7 +387,31 @@ def convert_srt_to_ass_vertical(srt_path, ass_path, subtitle_pos, img_w, img_h, 
         except Exception as e:
             pass
 
-    max_chars = max(5, int((box_h - 20) / (font_size * 0.6)))
+    # =================================================================
+    # 【核心重构：Pillow 物理像素测量引擎】
+    # =================================================================
+    # 动态加载蒙文字体
+    font_dir = os.path.join(root_dir, "project", "fronts")
+    ttf_files = glob.glob(os.path.join(font_dir, "*.ttf"))
+    try:
+        if ttf_files:
+            pil_font = ImageFont.truetype(ttf_files[0], font_size)
+        else:
+            pil_font = ImageFont.load_default()
+    except Exception:
+        pil_font = ImageFont.load_default()
+
+    # 安全的可用像素高度（扣除上下 20 像素的边距）
+    max_pixels = max(10, box_h - 20)
+
+    # 兼容不同版本的 Pillow 长度测量 API
+    def get_text_length(text):
+        if hasattr(pil_font, 'getlength'):
+            return pil_font.getlength(text)
+        elif hasattr(pil_font, 'getbbox'):
+            return pil_font.getbbox(text)[2]
+        else:
+            return pil_font.getsize(text)[0]
 
     ass_header = f"""[Script Info]
 ScriptType: v4.00+
@@ -407,29 +439,42 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 original_text = " ".join(text_lines)
 
                 translated_text = translate_to_mongolian(original_text, pid, appkey)
-
                 words = translated_text.split()
+
                 cols = []
                 curr_col = ""
+
                 for w in words:
-                    if len(w) > max_chars:
+                    w_len = get_text_length(w)
+                    # 极端情况：单个单词的长度就已经超过了整个红框的高度
+                    if w_len > max_pixels:
                         if curr_col:
                             cols.append(curr_col)
                             curr_col = ""
-                        for chunk_idx in range(0, len(w), max_chars):
-                            chunk = w[chunk_idx:chunk_idx+max_chars]
-                            if len(chunk) == max_chars:
-                                cols.append(chunk)
+                        # 强行按字符截断这个超长单词
+                        temp_chunk = ""
+                        for char in w:
+                            test_chunk = temp_chunk + char
+                            if get_text_length(test_chunk) > max_pixels:
+                                cols.append(temp_chunk)
+                                temp_chunk = char
                             else:
-                                curr_col = chunk
+                                temp_chunk = test_chunk
+                        if temp_chunk:
+                            curr_col = temp_chunk
                     else:
-                        if not curr_col:
-                            curr_col = w
-                        elif len(curr_col) + 1 + len(w) <= max_chars:
-                            curr_col += " " + w
+                        # Word 式换行：尝试把新单词拼接到当前列
+                        test_col = curr_col + (" " if curr_col else "") + w
+                        test_len = get_text_length(test_col)
+
+                        # 如果物理像素没有超标，就死死咬住在这一列
+                        if test_len <= max_pixels:
+                            curr_col = test_col
                         else:
+                            # 只有真正超出物理边界时，才换到下一列
                             cols.append(curr_col)
                             curr_col = w
+
                 if curr_col:
                     cols.append(curr_col)
 
@@ -728,7 +773,7 @@ def main():
         def inference_worker(task, gpu_manager, result_dict):
             cmd = [sys.executable, args.model_path, "--video", task['in_dir'], "--mask", task['mk_dir'], "--output",
                    task['out_dir'], "--fp16", "--mask_dilation", "4", "--flow_mask_dilation", "20", "--raft_iter", "20",
-                   "--ref_stride", "10", "--subvideo_length", "80"]
+                   "--ref_stride", "10", "--subvideo_length", "60"]
             env = os.environ.copy();
             env['CUDA_VISIBLE_DEVICES'] = gpu_manager.gpu_id
             tag = f"[GPU {gpu_manager.gpu_id} | {task['region']} | {task['seg_name']}]"
