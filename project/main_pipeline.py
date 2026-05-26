@@ -671,7 +671,7 @@ def main():
     parser.add_argument('--gpus', default='0')
     parser.add_argument('--scale_delay', type=int, default=3)
     parser.add_argument('--cooldown', type=int, default=10)
-    parser.add_argument('--max_workers_per_gpu', type=int, default=4)
+    parser.add_argument('--max_workers_per_gpu', type=int, default=1)
     args = parser.parse_args()
 
     if not os.path.isabs(args.model_path): args.model_path = os.path.join(current_dir, args.model_path)
@@ -819,6 +819,9 @@ def main():
             with open(log_path, 'w', encoding='utf-8') as log_f:
                 log_f.write(f"--- 任务启动 | GPU: {gpu_manager.gpu_id} | 时间: {datetime.datetime.now()} ---\n")
                 log_f.write(f"执行命令: {' '.join(cmd)}\n\n")
+
+                # 强行把这两句开头刷进硬盘！这样哪怕卡死，你也知道它卡在哪条命令上
+                log_f.flush()
 
                 try:
                     process = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
