@@ -777,6 +777,22 @@ def main():
                              'end_frame': seg_end})
 
         total_tasks = global_task_queue.qsize()
+
+        #生成断点续传状态清单，为后续 OOM 恢复做准备
+        manifest_path = os.path.join(args.workspace, "task_manifest.json")
+        manifest_lock = threading.Lock()
+
+        manifest_data = {}
+        temp_queue = list(global_task_queue.queue)
+        for t in temp_queue:
+            t['task_id'] = f"{t['region']}_{t['seg_name']}"
+            manifest_data[t['task_id']] = {
+                "task_data": t,
+                "status": "pending"
+            }
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest_data, f, indent=4)
+
         print(f"[Main] 预处理完成！算力豁免后总计 {total_tasks} 个待处理片段进入 GPU 队列。")
 
         print("\n[Step 3] 启动多 GPU AIMD 调度引擎...")
@@ -786,38 +802,65 @@ def main():
         print_lock = threading.Lock();
         completed_tasks = 0
 
+        # 👇 【一次性修改 4】：重写推理 Worker，增加独立日志和清单回写
         def inference_worker(task, gpu_manager, result_dict):
+            # 注意：参数已恢复为你最稳定的防 OOM 版本 (30帧，防闪烁)
             cmd = [sys.executable, args.model_path, "--video", task['in_dir'], "--mask", task['mk_dir'], "--output",
-                   task['out_dir'], "--fp16", "--mask_dilation", "4", "--flow_mask_dilation", "20", "--raft_iter", "20",
-                   "--ref_stride", "10", "--subvideo_length", "60"]
-            env = os.environ.copy();
+                   task['out_dir'], "--fp16", "--mask_dilation", "8", "--flow_mask_dilation", "30", "--raft_iter", "20",
+                   "--ref_stride", "5", "--subvideo_length", "30"]
+            env = os.environ.copy()
             env['CUDA_VISIBLE_DEVICES'] = gpu_manager.gpu_id
-            tag = f"[GPU {gpu_manager.gpu_id} | {task['region']} | {task['seg_name']}]"
-            try:
-                process = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                           cwd=current_dir, universal_newlines=True, errors='replace')
-                is_oom = False
-                while True:
-                    line = process.stdout.readline()
-                    if line == '' and process.poll() is not None: break
-                    if line:
-                        l = line.strip()
-                        if "CUDA out of memory" in l or "RuntimeError: CUDA" in l: is_oom = True
-                if is_oom or process.returncode == 137:
-                    result_dict['status'] = 'oom'
-                elif process.returncode != 0:
+
+            # 【新增】：在当前切片目录下生成独立日志文件
+            log_path = os.path.join(task['out_dir'], "inference_detailed.log")
+
+            with open(log_path, 'w', encoding='utf-8') as log_f:
+                log_f.write(f"--- 任务启动 | GPU: {gpu_manager.gpu_id} | 时间: {datetime.datetime.now()} ---\n")
+                log_f.write(f"执行命令: {' '.join(cmd)}\n\n")
+
+                try:
+                    process = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                               cwd=current_dir, universal_newlines=True, errors='replace')
+                    is_oom = False
+                    while True:
+                        line = process.stdout.readline()
+                        if line == '' and process.poll() is not None: break
+                        if line:
+                            log_f.write(line)
+                            log_f.flush()  # 实时刷入硬盘，即使突然 OOM 宕机，之前的日志也在
+                            l = line.strip()
+                            if "CUDA out of memory" in l or "RuntimeError: CUDA" in l: is_oom = True
+
+                    if is_oom or process.returncode == 137:
+                        result_dict['status'] = 'oom'
+                    elif process.returncode != 0:
+                        result_dict['status'] = 'error'
+                    else:
+                        mp4 = os.path.join(task['out_dir'], "inference_output.mp4")
+                        if os.path.exists(mp4):
+                            frm_dir = os.path.join(task['out_dir'], "frames")
+                            os.makedirs(frm_dir, exist_ok=True)
+                            subprocess.run(
+                                ['ffmpeg', '-y', '-i', mp4, '-start_number', '0', os.path.join(frm_dir, '%04d.png')],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        result_dict['status'] = 'success'
+                except Exception as e:
+                    log_f.write(f"\n[FATAL ERROR]: {str(e)}\n")
                     result_dict['status'] = 'error'
-                else:
-                    mp4 = os.path.join(task['out_dir'], "inference_output.mp4")
-                    if os.path.exists(mp4):
-                        frm_dir = os.path.join(task['out_dir'], "frames")
-                        os.makedirs(frm_dir, exist_ok=True)
-                        subprocess.run(
-                            ['ffmpeg', '-y', '-i', mp4, '-start_number', '0', os.path.join(frm_dir, '%04d.png')],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    result_dict['status'] = 'success'
-            except Exception as e:
-                result_dict['status'] = 'error'
+
+                log_f.write(f"\n--- 任务结束 | 状态: {result_dict['status']} | 时间: {datetime.datetime.now()} ---\n")
+
+            # 【新增】：利用线程锁，安全地回写断点续传清单状态
+            with manifest_lock:
+                try:
+                    with open(manifest_path, 'r', encoding='utf-8') as mf:
+                        data = json.load(mf)
+                    if task['task_id'] in data:
+                        data[task['task_id']]['status'] = result_dict['status']
+                    with open(manifest_path, 'w', encoding='utf-8') as mf:
+                        json.dump(data, mf, indent=4)
+                except:
+                    pass
 
         while not global_task_queue.empty() or active_threads:
             for gm in gpu_managers:
