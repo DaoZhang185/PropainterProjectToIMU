@@ -29,6 +29,18 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 if root_dir not in sys.path: sys.path.insert(0, root_dir)
 
+# =================================================================
+# 【全局变量】用于 API 连接复用与熔断保护机制
+# =================================================================
+_translate_session = requests.Session()
+_translate_session.proxies.update({
+    "http": os.environ.get("http_proxy") or os.environ.get("HTTP_PROXY"),
+    "https": os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY")
+})
+
+_failure_count = 0
+_last_failure_time = 0
+_COOLDOWN_SECONDS = 60
 
 class DualLogger(object):
     def __init__(self, filepath):
@@ -303,66 +315,66 @@ def get_md5(text):
 
 
 def translate_to_mongolian(text, pid="YOUR_PID", appKey="YOUR_APPKEY"):
-    # 【修复 3：防御性编程】内容、pid 或 appkey 为空时直接跳过，绝不浪费网络请求
+    global _failure_count, _last_failure_time
+
     if not text.strip() or not pid or not appKey:
         return text
+
+    # ✅ 4. 熔断保护：在连续失败后自动暂停 60 秒，避免雪崩
+    if _failure_count >= 3:
+        if time.time() - _last_failure_time > _COOLDOWN_SECONDS:
+            _failure_count = 0  # 冷却结束，重置计数
+        else:
+            print(f"    ⚠ 接口处于冷却期（60秒内连续失败），保留原文")
+            return text
 
     url = "http://oy.nmgoyun.com/api/fy/v1"
     timestamp = str(int(time.time() * 1000))
     nonce = uuid.uuid4().hex
 
-    # 【修复 2：类型一致性】明确 type 为整数 5
     sign_params = {
-        "appKey": appKey,
-        "inputStr": text,
-        "nonce": nonce,
-        "pid": pid,
-        "timestamp": timestamp,
-        "type": 5
+        "appKey": appKey, "inputStr": text, "nonce": nonce,
+        "pid": pid, "timestamp": timestamp, "type": 5
     }
-
-    # 【修复 1：严格签名机制】按字典序排序，直接拼接原始字符串，绝对不要 url_encode
     sorted_keys = sorted(sign_params.keys())
     sign_str = "&".join([f"{k}={sign_params[k]}" for k in sorted_keys])
     sign = hashlib.md5(sign_str.encode('utf-8')).hexdigest().upper()
 
-    # 实际发送的 payload 不包含 appKey
     payload = {
-        "inputStr": text,
-        "nonce": nonce,
-        "pid": pid,
-        "sign": sign,
-        "timestamp": timestamp,
-        "type": 5
-    }
-
-    # 【修复 4：网络代理穿透】主动抓取系统的 http/https 代理环境变量
-    proxies = {
-        "http": os.environ.get("http_proxy") or os.environ.get("HTTP_PROXY"),
-        "https": os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY")
+        "inputStr": text, "nonce": nonce, "pid": pid,
+        "sign": sign, "timestamp": timestamp, "type": 5
     }
 
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # 引入 proxies 参数，采用 (3秒连接, 5秒读取) 的快连快断策略
-            resp = requests.post(url, json=payload, timeout=(3, 5), proxies=proxies)
+            # ✅ 1. 使用 requests.Session 复用连接
+            # ✅ 2. 超时时间放宽至 (10, 20) 秒
+            resp = _translate_session.post(url, json=payload, timeout=(10, 20))
             res_json = resp.json()
 
             if res_json.get("code") == "0000":
+                _failure_count = 0  # 成功则清零失败计数
                 return res_json.get("data", text)
             else:
-                print(f"    ⚠ [翻译接口报错] 代码: {res_json.get('code')}, 信息: {res_json.get('message')}")
-                return text
-
+                print(f"    ⚠ [翻译报错] 代码: {res_json.get('code')}, 信息: {res_json.get('message')}")
+                if res_json.get("code") in ("0002", "0003", "0004"):
+                    return text  # 参数/签名错误直接放弃，不重试
         except requests.exceptions.Timeout:
-            print(f"    ⚠ [翻译超时] 第 {attempt + 1} 次请求超时，正在重试...")
+            print(f"    ⚠ [翻译超时] 第 {attempt + 1} 次请求超时", end="")
         except Exception as e:
-            print(f"    ⚠ [翻译异常] 第 {attempt + 1} 次请求失败: {e}，正在重试...")
+            print(f"    ⚠ [翻译异常] 第 {attempt + 1} 次请求失败: {e}", end="")
 
-        time.sleep(1)  # 失败缓冲 1 秒
+        if attempt < max_retries - 1:
+            # ✅ 3. 指数退避重试（1, 2, 4 秒）
+            wait = 2 ** attempt
+            print(f"，等待 {wait} 秒后重试...")
+            time.sleep(wait)
 
-    print(f"    ❌ [翻译彻底失败] 超过 {max_retries} 次仍无法连接奥云服务器，保留原中文字幕。")
+    # 记录失败状态，触发熔断
+    _failure_count += 1
+    _last_failure_time = time.time()
+    print(f"\n    ❌ [彻底失败] 超过 {max_retries} 次仍无法连接，保留原文。")
     return text
 
 
@@ -439,6 +451,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 original_text = " ".join(text_lines)
 
                 translated_text = translate_to_mongolian(original_text, pid, appkey)
+
+                # ✅ 5. 请求之间加入 0.5 秒间隔，降低限流概率
+                time.sleep(0.)
+
                 words = translated_text.split()
 
                 cols = []
@@ -832,7 +848,7 @@ def main():
                         shutil.rmtree(t.task['in_dir']); shutil.rmtree(t.task['mk_dir'])
                     except:
                         pass
-            time.sleep(0.5)
+            time.sleep(0.01)
 
         print("\n[Step 6] 图片合并...")
         report_progress("finalizing", 90)
