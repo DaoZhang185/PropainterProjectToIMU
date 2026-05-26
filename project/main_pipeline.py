@@ -802,7 +802,7 @@ def main():
         print_lock = threading.Lock();
         completed_tasks = 0
 
-        # 👇 【一次性修改 4】：重写推理 Worker，增加独立日志和清单回写
+        # 重写推理 Worker，增加独立日志和清单回写
         def inference_worker(task, gpu_manager, result_dict):
             # 注意：参数已恢复为你最稳定的防 OOM 版本 (30帧，防闪烁)
             cmd = [sys.executable, args.model_path, "--video", task['in_dir'], "--mask", task['mk_dir'], "--output",
@@ -810,6 +810,8 @@ def main():
                    "--ref_stride", "5", "--subvideo_length", "30"]
             env = os.environ.copy()
             env['CUDA_VISIBLE_DEVICES'] = gpu_manager.gpu_id
+            #在写日志前，强行在系统里把该切片的专属结果文件夹建出来！
+            os.makedirs(task['out_dir'], exist_ok=True)
 
             # 【新增】：在当前切片目录下生成独立日志文件
             log_path = os.path.join(task['out_dir'], "inference_detailed.log")
