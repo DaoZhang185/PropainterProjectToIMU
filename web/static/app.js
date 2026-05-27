@@ -39,6 +39,12 @@ async function uploadVideo() {
     const fileInput = document.getElementById('video-file');
     if (!fileInput.files[0]) { alert('请选择要上传的视频文件'); return; }
 
+    //【新增】点击上传按钮后，隐藏展示区，激活并展现真实的画布工作区
+    const showcase = document.getElementById('video-showcase');
+    const maskContainer = document.getElementById('mask-container');
+    if (showcase) showcase.style.display = 'none';
+    if (maskContainer) maskContainer.style.display = 'flex'; // 恢复原本的flex布局
+
     const file = fileInput.files[0];
     const videoNode = document.createElement('video');
     videoNode.preload = 'metadata';
@@ -599,4 +605,27 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
     });
+
+    // =================================================================
+    // 【新增】四宫格视频绝对同步播放引擎
+    // =================================================================
+    const showcaseVideos = document.querySelectorAll('.showcase-item video');
+    if (showcaseVideos.length > 0) {
+        // 让所有视频等待，直到它们都缓冲到了“可以流畅播放”的状态
+        Promise.all(Array.from(showcaseVideos).map(video => {
+            return new Promise(resolve => {
+                if (video.readyState >= 3) {
+                    resolve();
+                } else {
+                    video.addEventListener('canplay', resolve, { once: true });
+                }
+            });
+        })).then(() => {
+            // 所有视频均已准备就绪，同时归零并按下“播放键”
+            showcaseVideos.forEach(video => {
+                video.currentTime = 0; // 绝对对齐时间轴
+                video.play();
+            });
+        });
+    }
 });

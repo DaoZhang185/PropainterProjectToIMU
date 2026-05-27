@@ -46,6 +46,11 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory=os.path.join(WEB_DIR, "static")), name="static")
+#挂载首页动态效果视频目录
+PLAYVIDEO_DIR = os.path.join(WEB_DIR, 'playvideo')
+os.makedirs(PLAYVIDEO_DIR, exist_ok=True)
+app.mount("/playvideo", StaticFiles(directory=PLAYVIDEO_DIR), name="playvideo")
+
 templates = Jinja2Templates(directory=os.path.join(WEB_DIR, "templates"))
 
 SAM_WEIGHT_PATH = os.path.join(PROPAINTER_ROOT, 'weights', 'sam_vit_b_01ec64.pth')

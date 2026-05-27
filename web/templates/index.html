@@ -268,6 +268,48 @@
             border-radius: 1.5px;
         }
 
+        /* 【新增】首页四个视频展示区的网格布局 */
+        .video-showcase {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 16px;
+            flex: 1;
+            width: 100%;
+            height: 100%;
+        }
+
+        .showcase-item {
+            background: #ffffff;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+            height: 100%;
+            box-sizing: border-box;
+        }
+
+        .showcase-item video {
+            width: 100%;
+            flex: 1;
+            height: 0; /* 配合flex:1自动填满容器 */
+            object-fit: cover; /* 保证画面充满不留黑边 */
+            border-radius: 4px;
+            background: #111;
+        }
+
+        .showcase-title {
+            text-align: center;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--dark);
+            margin-top: 10px;
+            height: 20px;
+            line-height: 20px;
+        }
+
         #annotationInfo {
             font-size: 12px;
             background: #fdfdfd;
@@ -451,7 +493,26 @@
             </div>
 
             <div class="content-area">
-                <div class="mask-container" id="mask-container">
+                <div id="video-showcase" class="video-showcase">
+                    <div class="showcase-item">
+                        <video src="/playvideo/before.mp4"  loop muted playsinline></video>
+                        <div class="showcase-title">原始视频</div>
+                    </div>
+                    <div class="showcase-item">
+                        <video src="/playvideo/traditional-processing.mp4"  loop muted playsinline></video>
+                        <div class="showcase-title">传统方法处理后视频</div>
+                    </div>
+                    <div class="showcase-item">
+                        <video src="/playvideo/before.mp4"  loop muted playsinline></video>
+                        <div class="showcase-title">原始视频</div>
+                    </div>
+                    <div class="showcase-item">
+                        <video src="/playvideo/Intelligent-cleaning.mp4"  loop muted playsinline></video>
+                        <div class="showcase-title">智能清洗后视频</div>
+                    </div>
+                </div>
+
+                <div class="mask-container" id="mask-container" style="display: none;">
                     <div class="placeholder-text" id="frame-placeholder">
                         <i class="fas fa-photo-film fa-4x mb-3" style="color: #dcdfe6;"></i><br>
                         等待加载参考画面...<br>
