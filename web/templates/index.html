@@ -303,20 +303,20 @@
         }
 
         .showcase-title {
-            position: absolute; /* 🔑 绝对定位，悬浮在视频上方 */
-            bottom: 0;
+            position: absolute; /* 绝对定位 */
+            top: 0;             /* 🔑 核心修改：死死固定在卡片最顶部 */
             left: 0;
             width: 100%;
-            padding: 24px 16px 12px 16px; /* 顶部多留 padding 让渐变更自然 */
+            padding: 12px 16px 24px 16px; /* 🔑 调整内边距，让下方渐变过渡更自然 */
             margin: 0;
-            /* 🔑 核心魔法：黑色渐变蒙层，保证白字在任何视频画面上都绝对清晰 */
-            background: linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,0.7) 80%, rgba(0,0,0,0.85) 100%);
+            /* 🔑 核心魔法：反转渐变方向，顶部较黑提供对比度，向下完全透明 */
+            background: linear-gradient(to bottom, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.4) 60%, rgba(0,0,0,0) 100%);
             color: #ffffff; /* 纯白文字 */
             font-size: 14px;
             font-weight: 500;
             letter-spacing: 1px;
             text-align: center;
-            pointer-events: none; /* 防止遮挡视频的点击/播放控制 */
+            pointer-events: none; /* 防止遮挡视频的点击控制 */
             box-sizing: border-box;
             z-index: 10;
         }
