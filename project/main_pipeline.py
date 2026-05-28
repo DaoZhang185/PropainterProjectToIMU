@@ -725,7 +725,7 @@ def main():
             with ThreadPoolExecutor(max_workers=8) as ex:
                 list(ex.map(crop_worker, tasks))
 
-            scene_indices = detect_scenes_from_folder(crop_frames_dir, threshold=10.0)
+            scene_indices = detect_scenes_from_folder(crop_frames_dir, threshold=5.0)
             if 0 not in scene_indices: scene_indices.insert(0, 0)
             if len(frame_files) not in scene_indices: scene_indices.append(len(frame_files))
             scene_indices = sorted(list(set(scene_indices)))
@@ -805,9 +805,9 @@ def main():
         # 重写推理 Worker，增加独立日志和清单回写
         def inference_worker(task, gpu_manager, result_dict):
             # 注意：参数已恢复为你最稳定的防 OOM 版本 (30帧，防闪烁)
-            cmd = [sys.executable, args.model_path, "--video", task['in_dir'], "--mask", task['mk_dir'], "--output",
-                   task['out_dir'], "--fp16", "--mask_dilation", "8", "--flow_mask_dilation", "30", "--raft_iter", "20",
-                   "--ref_stride", "5", "--subvideo_length", "30"]
+            cmd = [sys.executable,"-u", args.model_path, "--video", task['in_dir'], "--mask", task['mk_dir'], "--output",
+                   task['out_dir'], "--fp16", "--mask_dilation", "1", "--flow_mask_dilation", "20", "--raft_iter", "20",
+                   "--ref_stride", "10", "--subvideo_length", "30"]
             env = os.environ.copy()
             env['CUDA_VISIBLE_DEVICES'] = gpu_manager.gpu_id
             #在写日志前，强行在系统里把该切片的专属结果文件夹建出来！
