@@ -526,7 +526,7 @@ function startStatusPolling() {
             document.getElementById('progress-bar').style.width = task.progress + '%';
 
             // 【新增】加入字幕生成阶段中文提示
-            const stageMap = { 'initialization': '分配算力', 'scene_detection': '光流分析', 'mask_generation': '渲染掩码', 'video_processing': '分布式推理', 'finalizing': '画面合成', 'subtitle_burning': '语音提取翻译及烧录', 'completed': '全自动产线清洗完毕' };
+            const stageMap = { 'initialization': '分配算力', 'scene_detection': '光流分析', 'mask_generation': '渲染掩码', 'video_processing': '清洗中', 'finalizing': '画面合成', 'subtitle_burning': '语音提取', 'completed': '全自动产线清洗完毕' };
             document.getElementById('progress-text').textContent = (stageMap[task.current_stage] || '处理中') + ' ' + task.progress + '%';
             document.getElementById('download-video-btn').disabled = (task.status !== 'completed');
             if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') { clearInterval(statusInterval); document.getElementById('cancel-btn').disabled = true; }
