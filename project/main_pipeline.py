@@ -812,7 +812,7 @@ def main():
         def inference_worker(task, gpu_manager, result_dict):
             # 注意：参数已恢复为你最稳定的防 OOM 版本 (30帧，防闪烁)
             cmd = [sys.executable,"-u", args.model_path, "--video", task['in_dir'], "--mask", task['mk_dir'], "--output",
-                   task['out_dir'], "--fp16", "--mask_dilation", "1", "--flow_mask_dilation", "20", "--raft_iter", "20",
+                   task['out_dir'], "--fp16", "--mask_dilation", "1", "--flow_mask_dilation", "30", "--raft_iter", "20",
                    "--ref_stride", "10", "--subvideo_length", "30"]
             env = os.environ.copy()
             env['CUDA_VISIBLE_DEVICES'] = gpu_manager.gpu_id
