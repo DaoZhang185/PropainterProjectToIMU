@@ -29,18 +29,6 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 if root_dir not in sys.path: sys.path.insert(0, root_dir)
 
-# =================================================================
-# 【全局变量】用于 API 连接复用与熔断保护机制
-# =================================================================
-_translate_session = requests.Session()
-_translate_session.proxies.update({
-    "http": os.environ.get("http_proxy") or os.environ.get("HTTP_PROXY"),
-    "https": os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY")
-})
-
-_failure_count = 0
-_last_failure_time = 0
-_COOLDOWN_SECONDS = 60
 
 class DualLogger(object):
     def __init__(self, filepath):
@@ -314,68 +302,82 @@ def get_md5(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest().upper()
 
 
-def translate_to_mongolian(text, pid="YOUR_PID", appKey="YOUR_APPKEY"):
-    global _failure_count, _last_failure_time
+class TranslationClient:
+    """奥云翻译客户端，带连接复用、指数退避和失败熔断"""
+    def __init__(self, pid, appkey, max_retries=3, base_timeout=(10, 20)):
+        self.pid = pid
+        self.appkey = appkey
+        self.max_retries = max_retries
+        self.base_timeout = base_timeout
+        self.session = requests.Session()
+        self.failure_count = 0
+        self.last_failure_time = 0
+        self.cooldown_seconds = 60
 
-    if not text.strip() or not pid or not appKey:
-        return text
+        self.proxies = {
+            "http": os.environ.get("http_proxy") or os.environ.get("HTTP_PROXY"),
+            "https": os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY")
+        }
+        self.session.proxies.update({k: v for k, v in self.proxies.items() if v})
 
-    # ✅ 4. 熔断保护：在连续失败后自动暂停 60 秒，避免雪崩
-    if _failure_count >= 3:
-        if time.time() - _last_failure_time > _COOLDOWN_SECONDS:
-            _failure_count = 0  # 冷却结束，重置计数
-        else:
-            print(f"    ⚠ 接口处于冷却期（60秒内连续失败），保留原文")
+    def _should_enter_cooldown(self):
+        if self.failure_count >= 3:
+            if time.time() - self.last_failure_time > self.cooldown_seconds:
+                self.failure_count = 0
+                return False
+            return True
+        return False
+
+    def translate(self, text):
+        if not text.strip() or not self.pid or not self.appkey:
             return text
 
-    url = "http://oy.nmgoyun.com/api/fy/v1"
-    timestamp = str(int(time.time() * 1000))
-    nonce = uuid.uuid4().hex
+        if self._should_enter_cooldown():
+            print(f"    ⚠ 连续失败过多，冷却 {self.cooldown_seconds} 秒，保留原文")
+            return text
 
-    sign_params = {
-        "appKey": appKey, "inputStr": text, "nonce": nonce,
-        "pid": pid, "timestamp": timestamp, "type": 5
-    }
-    sorted_keys = sorted(sign_params.keys())
-    sign_str = "&".join([f"{k}={sign_params[k]}" for k in sorted_keys])
-    sign = hashlib.md5(sign_str.encode('utf-8')).hexdigest().upper()
+        url = "http://oy.nmgoyun.com/api/fy/v1"
+        timestamp = str(int(time.time() * 1000))
+        nonce = uuid.uuid4().hex
 
-    payload = {
-        "inputStr": text, "nonce": nonce, "pid": pid,
-        "sign": sign, "timestamp": timestamp, "type": 5
-    }
+        sign_params = {
+            "appKey": self.appkey, "inputStr": text, "nonce": nonce,
+            "pid": self.pid, "timestamp": timestamp, "type": 5
+        }
+        sorted_keys = sorted(sign_params.keys())
+        sign_str = "&".join(f"{k}={sign_params[k]}" for k in sorted_keys)
+        sign = get_md5(sign_str)
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            # ✅ 1. 使用 requests.Session 复用连接
-            # ✅ 2. 超时时间放宽至 (10, 20) 秒
-            resp = _translate_session.post(url, json=payload, timeout=(10, 20))
-            res_json = resp.json()
+        payload = {
+            "inputStr": text, "nonce": nonce, "pid": self.pid,
+            "sign": sign, "timestamp": timestamp, "type": 5
+        }
 
-            if res_json.get("code") == "0000":
-                _failure_count = 0  # 成功则清零失败计数
-                return res_json.get("data", text)
-            else:
-                print(f"    ⚠ [翻译报错] 代码: {res_json.get('code')}, 信息: {res_json.get('message')}")
-                if res_json.get("code") in ("0002", "0003", "0004"):
-                    return text  # 参数/签名错误直接放弃，不重试
-        except requests.exceptions.Timeout:
-            print(f"    ⚠ [翻译超时] 第 {attempt + 1} 次请求超时", end="")
-        except Exception as e:
-            print(f"    ⚠ [翻译异常] 第 {attempt + 1} 次请求失败: {e}", end="")
+        for attempt in range(self.max_retries):
+            try:
+                resp = self.session.post(url, json=payload, timeout=self.base_timeout)
+                res_json = resp.json()
+                if res_json.get("code") == "0000":
+                    self.failure_count = 0
+                    return res_json.get("data", text)
+                else:
+                    print(f"    ⚠ [接口错误] 第 {attempt+1} 次, code={res_json.get('code')}, msg={res_json.get('message')}")
+                    if res_json.get("code") in ("0002", "0003", "0004"):
+                        return text
+            except requests.exceptions.Timeout:
+                print(f"    ⚠ [超时] 第 {attempt+1} 次请求超时", end="")
+            except Exception as e:
+                print(f"    ⚠ [异常] 第 {attempt+1} 次请求失败: {e}", end="")
 
-        if attempt < max_retries - 1:
-            # ✅ 3. 指数退避重试（1, 2, 4 秒）
-            wait = 2 ** attempt
-            print(f"，等待 {wait} 秒后重试...")
-            time.sleep(wait)
+            if attempt < self.max_retries - 1:
+                wait = 2 ** attempt
+                print(f"，等待 {wait} 秒后重试...")
+                time.sleep(wait)
 
-    # 记录失败状态，触发熔断
-    _failure_count += 1
-    _last_failure_time = time.time()
-    print(f"\n    ❌ [彻底失败] 超过 {max_retries} 次仍无法连接，保留原文。")
-    return text
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        print(f"    ❌ [彻底失败] 保留原文")
+        return text
 
 
 def convert_srt_to_ass_vertical(srt_path, ass_path, subtitle_pos, img_w, img_h, pid, appkey):
@@ -437,12 +439,15 @@ Style: Default,Oyun Qagan Tig,{font_size},{primary_color},&H000000FF,{outline_co
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
+
+    ass_events = []
+    # 【新增】：在处理所有字幕块之前，实例化一次客户端
+    translation_client = TranslationClient(pid, appkey)
     try:
         with open(srt_path, 'r', encoding='utf-8') as f:
             srt_content = f.read()
 
         blocks = srt_content.strip().split('\n\n')
-        ass_events = []
         for block in blocks:
             lines = block.split('\n')
             if len(lines) >= 3:
@@ -450,10 +455,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 text_lines = lines[2:]
                 original_text = " ".join(text_lines)
 
-                translated_text = translate_to_mongolian(original_text, pid, appkey)
+                # 👇【修改】：调用实例化对象的方法进行翻译
+                translated_text = translation_client.translate(original_text)
 
-                # ✅ 5. 请求之间加入 0.5 秒间隔，降低限流概率
-                time.sleep(0.)
+                # 👇【修改】：修复 0. 的致命笔误，改为 0.5 秒防止被接口限流封IP
+                time.sleep(0.01)
 
                 words = translated_text.split()
 
