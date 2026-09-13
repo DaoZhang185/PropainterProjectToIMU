@@ -6,7 +6,6 @@ from tqdm import tqdm
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from core.prefetch_dataloader import PrefetchDataLoader, CPUPrefetcher
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -14,10 +13,10 @@ import torchvision
 from torch.utils.tensorboard import SummaryWriter
 
 from core.lr_scheduler import MultiStepRestartLR, CosineAnnealingRestartLR
-from core.loss import AdversarialLoss, PerceptualLoss, LPIPSLoss
+from core.loss import AdversarialLoss, LPIPSLoss
 from core.dataset import TrainDataset
 
-from model.modules.flow_comp_raft import RAFT_bi, FlowLoss, EdgeLoss
+from model.modules.flow_comp_raft import RAFT_bi
 from model.recurrent_flow_completion import RecurrentFlowCompleteNet
 
 from RAFT.utils.flow_viz_pt import flow_to_image

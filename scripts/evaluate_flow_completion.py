@@ -1,21 +1,17 @@
 # -*- coding: utf-8 -*-
 import sys 
-sys.path.append(".") 
+sys.path.append(".")
 
-import cv2
 import os
 import numpy as np
 import argparse
-from PIL import Image
 
 import torch
 from torch.utils.data import DataLoader
 
 from core.dataset import TestDataset
 from model.modules.flow_comp_raft import RAFT_bi
-from model.recurrent_flow_completion import RecurrentFlowCompleteNet
-
-from RAFT.utils.flow_viz_pt import flow_to_image
+from model import RecurrentFlowCompleteNet
 
 import cvbase
 import imageio

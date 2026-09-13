@@ -5,8 +5,6 @@ import importlib
 from tqdm import tqdm
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from core.prefetch_dataloader import PrefetchDataLoader, CPUPrefetcher
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP

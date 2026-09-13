@@ -7,13 +7,12 @@ import cv2
 import numpy as np
 import argparse
 from PIL import Image
-import torch.nn.functional as F
 
 import torch
 from torch.utils.data import DataLoader
 
 from model.modules.flow_comp_raft import RAFT_bi
-from model.recurrent_flow_completion import RecurrentFlowCompleteNet
+from model import RecurrentFlowCompleteNet
 from model.propainter import InpaintGenerator
 
 # from core.dataset import TestDataset
